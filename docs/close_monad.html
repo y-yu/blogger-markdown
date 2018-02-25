@@ -1,0 +1,187 @@
+<h1>はじめに</h1>
+<p><a href="http://qiita.com/piyo7/items/c9be1f39bcfea43a778a">Scalaで一番よく使うローンパターン</a>では、ローンパターンの典型的なコードとして次があげられている。</p>
+<pre><code class="scala">import java.io.Writer
+
+import scala.io.Source
+
+object Using {
+  def apply[A, B](resource: A)(process: A => B)(implicit closer: Closer[A]): B =
+    try {
+      process(resource)
+    } finally {
+      closer.close(resource)
+    }
+}
+
+case class Closer[-A](close: A => Unit)
+
+object Closer {
+  implicit val sourceCloser: Closer[Source] = Closer(_.close())
+  implicit val writerCloser: Closer[Writer] = Closer(_.close())
+}</code></pre>
+<p>このコードは、リソース（<code>resource</code>）を使った関数<code>process</code>を受け取ってそれを実行する。もし<code>process</code>が成功したとしても、あるいは失敗して例外を送出したとしても、リソースを閉じるために<code>closer.close(resource)</code>を呼び出すようになっている。ただ、このコードは著者が主張するようにモナドではないため、<code>for</code>式の中で使うことができない。よって、たとえば次のようにいくつものリソースを取り扱う場合はネストする。</p>
+<pre><code class="scala">Using(new FileInputStream(getClass.getResource("/source.txt").getPath)) { in =>
+  Using(new InputStreamReader(in, "UTF-8")) { reader =>
+    Using(new BufferedReader(reader)) { buff =>
+      Using(new FileOutputStream("dest.txt")) { out =>
+        Using(new OutputStreamWriter(out, "UTF-8")) { writer =>
+          var line = buff.readLine()
+          while (line != null) {
+            writer.write(line + "\n")
+            line = buff.readLine()
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+<p>また、<a href="http://d.hatena.ne.jp/gakuzo/20110630/1309442452">Loanパターンを<del>モナド</del>for式で使えるようにしてみたよ</a>では次のようにして<code>for</code>式の中で使えるようにしている。</p>
+<pre><code class="scala">class Loan[T <: {def close()}] private (value: T) {
+
+  def foreach[U](f: T => U): U = try {
+    f(value)
+  } finally {
+    value.close()
+  }  
+
+}
+object Loan {
+  
+  def apply[T <: {def close()}](value: T) = new Loan(value)
+  
+}</code></pre>
+<p>これを用いると先ほどのネストした例を次のように書ける。</p>
+<pre><code class="scala">for {
+  in     <- Loan(new FileInputStream("source.txt"))
+  reader <- Loan(new InputStreamReader(in, "UTF-8"))
+  buff   <- Loan(new BufferedReader(reader))
+  out    <- Loan(new FileOutputStream("dest.txt"))
+  writer <- Loan(new OutputStreamWriter(out, "UTF-8"))
+} {
+  var line = buff.readLine()
+  while (line != null) {
+    writer.write(line)
+    line = buff.readLine()
+  }
+}</code></pre>
+<p>ただ、この例では著者が主張するようにモナドにはなっていない。本記事ではこのようなIOのリソースを適切にクローズするような<code>Close</code>モナド<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>の作成を行う。また作成したモナドに対して<a href="https://github.com/scalaprops/scalaprops">scalaprops</a>でテストを作成する。なお、全体のソースコードは次のリポジトリにある。</p>
+<ul>
+<li><a href="https://github.com/y-yu/close" class="uri">https://github.com/y-yu/close</a></li>
+</ul>
+<h1>追記</h1>
+<p>@jwhaco さんが継続モナドを利用してよりよい実装を公開されていましたので、紹介させていただきます。</p>
+<ul>
+<li><a href="http://qiita.com/jwhaco/items/224113324fd454b8ca77">Loan パターンのネストは継続モナドでシュッと解決できるよという話</a></li>
+</ul>
+<h1><code>Close</code>モナド</h1>
+<p>このモナドの作成はリーダーモナドと<a href="http://qiita.com/pab_tech/items/86e4c31d052c678f6fa6">FujiTask</a>を参考にした。</p>
+<pre><code class="scala">abstract class Close[+R, +A](res: R) { self =>
+  protected def process()(implicit closer: Closer[R]): A
+
+  def run()(implicit closer: Closer[R]): A =
+    try {
+      process()
+    } finally {
+      closer.close(res)
+    }
+
+  def flatMap[AR >: R, B](f: A => Close[AR, B]): Close[AR, B] = new Close[AR, B](res) {
+    def process()(implicit closer: Closer[AR]): B =
+      try {
+        f(self.process()).process()
+      } finally {
+        closer.close(res)
+      }
+
+    override def run()(implicit closer: Closer[AR]): B =
+      process()
+  }
+
+  def map[B](f: A => B): Close[R, B] = flatMap(x => Close(res, f(x)))
+}
+
+object Close {
+  def apply[R, A](res: R, a: => A) = new Close[R, A](res) {
+    def process()(implicit closer: Closer[R]): A = a
+  }
+
+  def apply[R](res: R): Close[R, R] = apply(res, res)
+}</code></pre>
+<pre><code class="scala">trait Closer[-A] {
+  def close(a: A): Unit
+}
+
+object Closer {
+  def apply[A](f: A => Unit): Closer[A] = new Closer[A] {
+    def close(a: A): Unit = f(a)
+  }
+}</code></pre>
+<p>まず<code>Close</code>モナドは2つの型パラメータを受け取る。型パラメータ<code>R</code>はリソースの型を表し、型パラメータ<code>A</code>は結果の型を表すようになっている。 また、<code>flatMap</code>の内部では新しい<code>Close</code>モナドを作成している。<code>process</code>メソッドを積んでいく構造になっており、まず自分（<code>self</code>）の<code>process</code>メソッドを実行し、その結果を<code>f</code>に投入してさらに<code>process</code>メソッドを呼ぶようになっている。この一連の実行は<code>try</code>の中に入れることで、成功したとしても失敗して例外が送出されたとしても<code>finally</code>で<code>closer.close()</code>が実行されリソースがクローズされるようにしている。 <code>closer</code>はリソースの型<code>R</code>に対応するリソースをクローズする方法を提供する型クラスのインスタンスである。型クラス<code>Closer[A]</code>はリソース<code>A</code>をクローズするためのメソッド<code>close</code>を持つ。</p>
+<p>また、<a href="http://qiita.com/yyu/items/b83f079381e47c65ce0e#comment-8ea19c3ce53298446b42">がくぞさんから指摘</a>を参考に次の2つの変更を与えた。</p>
+<ol>
+<li><del><code>res: R</code>を<code>res: =&gt; R</code>にしてリソースの掴みっぱなしを無くした</del></li>
+</ol>
+<ul>
+<li><a href="http://qiita.com/yyu/items/b83f079381e47c65ce0e#comment-ed403e8312826729f657">kawachiさんの指摘</a>を受けて<code>res: R</code>へ戻した</li>
+</ul>
+<ol>
+<li><code>run</code>メソッドは最初だけリソースを解放するようにセットしておき、一度でも<code>map</code>/<code>flatMap</code>が発生すると<code>process</code>を呼び出すだけになるようにした。こうすることで指摘にあった未合成の<code>Close</code>モナドの<code>run</code>でリソースリークする問題に対応した</li>
+</ol>
+<h1><code>Close</code>モナドの実行例</h1>
+<p>さきほどの例を<code>Close</code>モナドで書くと次のようになる。</p>
+<pre><code class="scala">implicit def closer[R <: Closeable]: Closer[R] = Closer { x =>
+  println(s"close: ${x.toString}")
+  x.close()
+}
+
+(for {
+  in     <- Close(new FileInputStream(getClass.getResource("/source.txt").getPath))
+  reader <- Close(new InputStreamReader(in, "UTF-8"))
+  buff   <- Close(new BufferedReader(reader))
+  out    <- Close(new FileOutputStream("dest.txt"))
+  writer <- Close(new OutputStreamWriter(out, "UTF-8"))
+} yield {
+  println("[begin]")
+
+  var line = buff.readLine()
+  while (line != null) {
+    println(line)
+    writer.write(line + "\n")
+    line = buff.readLine()
+  }
+
+  println("[end]")
+}).run()</code></pre>
+<p>実行すると次のような結果が得られる<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>。</p>
+<pre><code>[begin]
+This
+is
+a
+pen
+[end]
+close: java.io.OutputStreamWriter@46cd1743
+close: java.io.FileOutputStream@513460bd
+close: java.io.BufferedReader@35f61ec8
+close: java.io.InputStreamReader@56d5bf00
+close: java.io.FileInputStream@788ccd96</code></pre>
+<h1>scalapropsによるテスト</h1>
+<p>やや複雑になったのでGitHubにあるコードのリンクを貼ることにする。</p>
+<ul>
+<li><a href="https://github.com/y-yu/close/blob/master/src/test/scala/close/CloseTest.scala">CloseTest.scala</a></li>
+<li><a href="https://github.com/y-yu/close/blob/master/src/test/scala/close/CloseTestHelper.scala">CloseTestHelper.scala</a></li>
+<li><a href="https://github.com/y-yu/close/blob/master/src/test/scala/close/CloseLaws.scala">CloseLaws.scala</a></li>
+</ul>
+<p>まず<code>Close[R, A]</code>の<code>R</code>を何か適当に固定して<a href="https://github.com/scalaz/scalaz">scalaz</a>のモナドインスタンスを作成する。そして後はひたすら<code>Gen</code>と<code>Equal</code>のインスタンスを作ればよい。ただ、<code>Gen[Close[R, A]]</code>の定義において、特定の割合で<code>run</code>メソッドが例外を送出するような工夫を行った。 また、モナドの性質とは別に次のようなテストも追加した。</p>
+<ul>
+<li>合成する前のリソースを<code>run</code>した場合にきちんとクローズされるか</li>
+<li><code>res1</code>、<code>res2</code>の順で合成した場合に<code>res2</code>、<code>res1</code>の順でクローズされるか</li>
+</ul>
+<h1>まとめ</h1>
+<p>この記事ではIOのリソースをクローズする<code>Close</code>モナドを実装した。よい悪いの議論は別として、<code>Close</code>モナドに限らず世の中にあるローンパターンはモナドで書き換え可能であるのではないかと考えている。<code>Close</code>モナド以外にも、何かモナドで書き換えると便利になるような例があるかもしれない。</p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p><code>Close</code>モナドは一般的な名前ではなく、筆者が勝手につけた名前である。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p><code>source.txt</code>の内容により出力が異なる。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

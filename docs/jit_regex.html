@@ -1,0 +1,264 @@
+<p><a href="http://qiita.com/yyu/items/a0ef2d2204c137707f3f">前回の記事</a>で、正規表現（の抽象構文木）からLLVMの中間表現（LLVM IR）<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>へコンパイルするという試みを行ったところ、Twitterで次のような投稿をいただいた<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>。</p>
+<blockquote class="twitter-tweet" lang="ja"><p lang="ja" dir="ltr"><a href="https://twitter.com/_yyu_">@_yyu_</a> <a href="https://t.co/UPV535fqbB">https://t.co/UPV535fqbB</a> とかを使うと、Mokkosuから動的コード生成ができてきっと楽しいです。</p>&mdash; ラムダ太郎 (@lambdataro) <a href="https://twitter.com/lambdataro/status/597781926154375168">2015, 5月 11</a></blockquote>
+<script async src="//platform.twitter.com/widgets.js" charset="utf-8"></script>
+<p>つまり、プログラムの実行時に正規表現に対応するバイトコードを生成して、それを実行すれば速度が早くなったりするかもしれないということである。これは一般的に<strong>Just in Time（JIT）コンパイル</strong>と呼ばれているもので、<a href="http://www.amazon.co.jp/dp/4774172707">正規表現技術入門</a>という本でも紹介されている。<a href="http://lambdataro.sakura.ne.jp/mokkosu/">Mokkosu</a>で実装してもよかったが、たぶんMokkosuのプログラマはそれほど多くないだろうということで、今回もScalaを使って実装することにする。</p>
+<h1>正規表現の抽象構文木</h1>
+<p>今回も正規表現の抽象構文木を次のデータ型で表現する。</p>
+<pre><code class="scala">sealed trait Regex
+case object Empty                  extends Regex
+case class Let(c: Char)            extends Regex
+case class Con(a: Regex, b: Regex) extends Regex
+case class Alt(a: Regex, b: Regex) extends Regex
+case class Star(a: Regex)          extends Regex</code></pre>
+<h1>動的コード生成の方法</h1>
+<p>JVMのバイトコード（バイナリ）を生成するコンパイラを自力で作るというのも一興だったが、色々調べた結果、<a href="http://asm.ow2.org/">ASM</a>というフレームワークを使えば気軽に動的コード生成ができそうな気がしたので、この記事ではこのフレームワークを用いて実行時にバイトコードを動的生成する。 ただ、この記事ではこのフレームワークについての知識は特に必要ない。</p>
+<h1>バイトコードの中間表現</h1>
+<p>今回も前回と同じように、バイトコードを表現するデータ型を定義して、それを後でバイトコードへ変換するアプローチを取る。バイトコードに対応するこれらの表現のことをこの記事では<strong>中間表現</strong>と呼ぶ。</p>
+<pre><code class="scala">sealed trait LId
+case class LInt(n: Int)   extends LId
+case class LLbl(l: Label) extends LId
+
+sealed trait Repr
+case object Const1          extends Repr
+case class  Push(n: Int)    extends Repr
+case object Dup2            extends Repr
+case class  Lbl(l: LId)     extends Repr
+case object Add             extends Repr
+case class  Goto(l: LId)    extends Repr
+case class  IfTrue(l: LId)  extends Repr
+case class  IfCmpNe(l: LId) extends Repr
+case class  InvokeStatic(p: String, n: String, t: String)  extends Repr
+case class  InvokeVirtual(p: String, n: String, t: String) extends Repr</code></pre>
+<p>まず<code>LId</code>はラベルの識別子を表現するデータ型であり、<code>Repr</code><a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a>はJVMの命令を表現するデータ型である。 最小の正規表現をコンパイルするだけならば、これだけの命令で済むというのは少し興味深い。</p>
+\[
+\def\AtSOne#1\csod{%
+    \begin{array}{c|}
+        \hline
+        #1\\
+        \hline
+    \end{array}
+}%
+\def\AtSTwo#1,#2\csod{%
+    \begin{array}{c|c|}
+        \hline
+        #1 & #2\\
+        \hline
+    \end{array}
+}%
+\def\AtSThree#1,#2,#3\csod{%
+    \begin{array}{c|c|c|}
+        \hline
+        #1 & #2 & #3\\
+        \hline
+    \end{array}
+}%
+\def\AtSFour#1,#2,#3,#4\csod{%
+    \begin{array}{c|c|c|c|}
+        \hline
+        #1 & #2 & #3 & #4\\
+        \hline
+    \end{array}
+}%
+\def\AtSFive#1,#2,#3,#4,#5\csod{%
+    \begin{array}{c|c|c|c|c|}
+        \hline
+        #1 & #2 & #3 & #4 & #5\\
+        \hline
+    \end{array}
+}%
+\def\SOne#1{\AtSOne#1\csod}
+\def\STwo#1{\AtSTwo#1\csod}
+\def\SThree#1{\AtSThree#1\csod}
+\def\SFour#1{\AtSFour#1\csod}
+\def\SFive#1{\AtSFive#1\csod}
+\def\textsc#1{\dosc#1\csod}
+\def\dosc#1#2\csod{{\rm #1{\scriptsize #2}}}
+\def\red#1{\color{red}{#1}}
+\def\blue#1{\color{blue}{#1}}
+\]
+<h1>スタックに関する表記</h1>
+<p>JVMは一本の<strong>スタック</strong>にデータを出し入れして計算を進めていく構造を取っている。この記事では分かりやすさのために、スタックに入ったデータを次のように表す。</p>
+\[
+\SFive{\red{s},\blue{t},a,c,k}
+\]
+<p>ここから、例えばスタックの先頭を破棄する命令 $\textsc{POP}$ を行うと、次のようにスタックが変化する。</p>
+\[
+\SFive{\red{s},\blue{t},a,c,k} \Rightarrow \SFour{\blue{t},a,c,k}
+\]
+<p>そして、スタックの先頭にデータを加える命令 $\textsc{PUSH}(\red{c})$ を行うと、次のようにスタックが変化する。</p>
+\[
+\SFour{\blue{t},a,c,k} \Rightarrow \SFive{\red{c},\blue{t},a,c,k}
+\]
+<p>また、空のスタックを次のように表す。</p>
+\[
+\SOne{\phantom{a}}
+\]
+<h1>正規表現から中間表現への変換</h1>
+<p>前回の記事ではレジスタを用いるLLVMの特性上、レジスタの番号をコンパイラが管理しなければならず、コードが必要以上に複雑になってしまった。ところがJVMは一本のスタックを操作するスタックマシンとなっているので、前回のコードより少しシンプルになっている。 また、今回も前回と同様に正規表現技術入門や<a href="https://swtch.com/%7Ersc/regexp/regexp2.html">Regular Expression Matching: the Virtual Machine Approach</a>で紹介されたていたVMをバイトコードで表現するアプローチとなる。 そして、次のような型を持つ関数を生成する。</p>
+<pre><code class="java">public static boolean test(String str, int sp, int label)</code></pre>
+<h2>実装の方針</h2>
+<p>生成された関数<code>test</code>は次の動作を行う。</p>
+<ol>
+<li>引数<code>str</code>, <code>sp</code>, <code>label</code>を受け取る</li>
+<li>引数を全てスタックへ置く（$\textsc{LOAD}$）$\SOne{\phantom{a}} \Rightarrow \SThree{label, sp, str}$</li>
+<li><code>label</code>の値に応じてジャンプする（$\textsc{LOOKUPSWITCH}$）$\SThree{label, sp, str} \Rightarrow \STwo{sp, str}$</li>
+<li>ジャンプ先の処理を実行する</li>
+</ol>
+<p>なので、ジャンプ先の処理に入る際のスタックは$\STwo{sp, str}$という状態になっている。</p>
+<h2>文字</h2>
+<pre><code class="scala">case Let(c) =>
+  val (l1, n1) = mk_label(n)
+  val r = List(
+    Lbl(l1),
+    Dup2,
+    InvokeVirtual("java/lang/String", "charAt", "(I)C"),
+    Push(c.toInt),
+    IfCmpNe(lmiss),
+    Const1,
+    Add
+  )
+  (r, n1)</code></pre>
+<p>これは次のような処理を中間表現を生成する。なお、<code>lmiss</code>とはマッチに失敗した場合に遷移する場所である。</p>
+<ol>
+<li>ラベルを打つ</li>
+<li>スタックの二つをコピーする（$\textsc{DUP2}$）$\STwo{sp, str} \Rightarrow \SFour{sp, str, sp, str}$</li>
+<li><code>charAt</code>を呼び出す（$\textsc{INVOKEVIRTUAL}$）<code>charAt</code>は文字列<code>str</code>と位置$i$という二つの引数を取り、<code>str</code>の位置$i$にある文字をスタックの先頭に置く $\SFour{sp, str, sp, str} \Rightarrow \SThree{char, sp, str}$</li>
+<li><em>c</em> に対応する文字コード（<code>c.toInt</code>）をスタックの先頭に置く（$\textsc{PUSH}$）$\SThree{char, sp, str} \Rightarrow \SFour{c, char, sp, str}$</li>
+<li>スタックの先頭と二番目が等しくなければ<code>lmiss</code>へジャンプする（$\textsc{IFCMPNE}$）$\SFour{c, char, sp, str} \Rightarrow \STwo{sp, str}$</li>
+<li>スタックの先頭に$1$を置く（$\textsc{CONST1}$）$\STwo{sp, str} \Rightarrow \SThree{1, sp, str}$</li>
+<li>スタックの先頭と二番目を足し算して、結果を先頭に置く（$\textsc{ADD}$）$\SThree{1, sp, str} \Rightarrow \STwo{sp + 1, str}$</li>
+</ol>
+<h2>連接</h2>
+<pre><code class="scala">case Con(a, b) =>
+  val (r1, n1) = loop(a, n)
+  val (r2, n2) = loop(b, n1)
+  (r1 ++ r2, n2)</code></pre>
+<p>前の部分と後の部分をそれぞれ中間表現へ変換し、それを結合する。</p>
+<h2>選択</h2>
+<pre><code class="scala">case Alt(a, b) =>
+  val (l1, n1) = mk_label(n)
+  val (r1, n2) = loop(a, n1)
+  val (l2, _)  = mk_label(n2)
+  val (r2, n3) = loop(b, n2)
+  val (l3, _)  = mk_label(n3)
+  val r = List(
+    Lbl(l1),
+    Dup2,
+    Push(n1),
+    InvokeStatic(cname, mname, mtype),
+    IfTrue(lmatch),
+    Goto(l2)) ++
+    r1 ++ (Goto(l3) :: r2)
+  (r, n3)</code></pre>
+<p>まず、事前に次の処理を行う。</p>
+<ol>
+<li>部分正規表現<code>a</code>を中間表現へ変換する（これを<code>r1</code>とする）</li>
+<li><code>r1</code>の末尾に次の命令を加える</li>
+</ol>
+<ul>
+<li>選択のもう一方（部分正規表現<code>b</code>）をスキップする（$\textsc{GOTO}$）</li>
+</ul>
+<ol>
+<li>部分正規表現<code>b</code>を中間表現へ変換する（これを<code>r2</code>とする）</li>
+</ol>
+<p>そして、次のような処理を中間表現を生成する。なお<code>lmatch</code>はマッチに成功した際に遷移する場所である。</p>
+<ol>
+<li>ラベルを打つ</li>
+<li>スタックの二つをコピーする（$\textsc{DUP2}$）$\STwo{sp, str} \Rightarrow \SFour{sp, str, sp, str}$</li>
+<li><code>r1</code>の先頭を指すラベル<code>n1</code>をスタックの先頭に置く（$\textsc{PUSH}$）$\SFour{sp, str, sp, str} \Rightarrow \SFive{n_1, sp, str, sp, str}$</li>
+<li>関数<code>test</code>を再帰的に呼び出し、返り値をスタックの先頭に置く（$\textsc{INVOKESTATIC}$）$\SFive{n_1, sp, str, sp, str} \Rightarrow \SThree{{1\, {\rm or}\, 0}, sp, str}$</li>
+<li>スタックの先頭が$1$ならば、<code>lmatch</code>へジャンプする（$\textsc{IFTRUE}$）$\SThree{{1\, {\rm or}\, 0}, sp, str} \Rightarrow \STwo{sp, str}$</li>
+<li><code>r2</code>の先頭を指すラベル<code>l2</code>へジャンプする（$\textsc{GOTO}$）</li>
+<li>生成した<code>r1</code>と<code>r2</code>を結合する</li>
+</ol>
+<h2>繰り返し</h2>
+<pre><code class="scala">case Star(Star(a)) => loop(Star(a), n)
+
+case Star(a) =>
+  val (l1, n1) = mk_label(n)
+  val (r1, n2) = loop(a, n1)
+  val (l2, n3) = mk_label(n2)
+  val r2       = List(Lbl(l2), Goto(l1))
+  val (l3, _)  = mk_label(n3)
+  val r = List(
+    Lbl(l1),
+    Dup2,
+    Push(n1),
+    InvokeStatic(cname, mname, mtype),
+    IfTrue(lmatch),
+    Goto(l3)) ++
+    r1 ++ r2
+  (r, n3)</code></pre>
+<p>まず、事前に次の処理を行う。</p>
+<ol>
+<li>部分正規表現<code>a</code>を中間表現へ変換する（これを<code>r1</code>とする）</li>
+<li><code>r1</code>の末尾に次の処理をする中間表現を加える</li>
+<li>ラベルを打つ</li>
+<li>ラベル<code>l1</code>（後で定義）へジャンプする（$\textsc{GOTO}$）</li>
+</ol>
+<p>そして、次のような処理を中間表現を生成する。</p>
+<ol>
+<li>ラベルを打つ（このラベルを<code>l1</code>とする）</li>
+<li>スタックの二つをコピーする（$\textsc{DUP2}$）$\STwo{sp, str} \Rightarrow \SFour{sp, str, sp, str}$</li>
+<li><code>r1</code>の先頭を指すラベル<code>n1</code>をスタックの先頭に置く（$\textsc{PUSH}$）$\SFour{sp, str, sp, str} \Rightarrow \SFive{n_1, sp, str, sp, str}$</li>
+<li>関数<code>test</code>を再帰的に呼び出し、返り値をスタックの先頭に置く（$\textsc{INVOKESTATIC}$）$\SFive{n_1, sp, str, sp, str} \Rightarrow \SThree{{1\, {\rm or}\, 0}, sp, str}$</li>
+<li>スタックの先頭が$1$ならば、<code>lmatch</code>へジャンプする（$\textsc{IFTRUE}$）$\SThree{{1\, {\rm or}\, 0}, sp, str} \Rightarrow \STwo{sp, str}$</li>
+<li>次の場所へジャンプする（$\textsc{GOTO}$）</li>
+<li>生成した中間表現<code>r1</code>を結合する</li>
+</ol>
+<h1>中間表現からバイトコードの生成</h1>
+<p>前回の記事と同じように、中間表現のパターンマッチで次のように実装できる。</p>
+<pre><code class="scala">def repr_to_code(mv: MethodVisitor, r: Repr, la: List[Label]): Unit = r match {
+  case Lbl(l) => mv.visitLabel(get_label(l, la))
+  case Const1 => mv.visitInsn(ICONST_1)
+  case Push(n) => mv.visitIntInsn(BIPUSH, n)
+  case Add => mv.visitInsn(IADD)
+  case Dup2 => mv.visitInsn(DUP2)
+  case Goto(l) => mv.visitJumpInsn(GOTO, get_label(l, la))
+  case IfCmpNe(l) => mv.visitJumpInsn(IF_ICMPNE, get_label(l, la))
+  case IfTrue(l) => mv.visitJumpInsn(IFNE, get_label(l, la))
+  case InvokeVirtual(p, n, t) => mv.visitMethodInsn(INVOKEVIRTUAL, p, n, t)
+  case InvokeStatic(p, n, t) => mv.visitMethodInsn(INVOKESTATIC, p, n, t)
+}</code></pre>
+<h1>実装</h1>
+<p>今回の実装は<a href="https://github.com/y-yu/RegexJIT">Github</a>で公開している。</p>
+<h1>ベンチマーク</h1>
+<p>遅い正規表現の方おもしろいような気がするので、<a href="http://developer.cybozu.co.jp/tech/?p=8757">遅いッ！遅すぎるッ！Java の正規表現のお話。</a>から遅い正規表現の例を紹介する<a href="#fn4" class="footnote-ref" id="fnref4"><sup>4</sup></a>。</p>
+<pre><code>(aa|a)*X</code></pre>
+<p>与える文字列は <em>a</em> や <em>aaaaa</em> といった<strong>マッチしない</strong>文字列を使って、マッチしないと判定するまでにかかる時間を測定することとする。次のコードを用いて、文字列 <em>a</em> を10文字から一文字ずつ増やして、かかる時間（ミリ秒）を計測した。</p>
+<pre><code class="scala">for (i <- 10 to 40) {
+  var str = ""
+  for (_ <- 1 to i) {
+    str += "a"
+  }
+  str += "\0"
+
+  var time = 0.0
+  for (_ <- 1 to 10) {
+    val start = System.currentTimeMillis
+    m.invoke(c, str, Int.box(0), Int.box(0))
+    //p.findFirstIn(str)
+    time += (System.currentTimeMillis - start)
+  }
+  println(time / 10 + ",")
+}</code></pre>
+<h2>結果</h2>
+<p>グラフの<font color="red">赤</font>が今回実装したエンジンで、<font color="blue">青</font>がScalaの正規表現エンジンである。</p>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/b9e0caec-cf75-dca5-0647-8b3213197ffc.png" alt="graph.png" /></p>
+<p>Scalaの正規表現エンジンと比べて、少なくともこの例においてはよいパフォーマンスが得られた。</p>
+<h1>まとめ</h1>
+<p>今回作成したコードは約200行程度であり、動的コード生成をシンプルに実装できたうえに、パフォーマンスが実際に向上したのは大変よかった。もちろん、この正規表現は最小の機能しか持っていないため、直ちにこのエンジンが有用かというとそうではないだろう。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="http://www.amazon.co.jp/dp/4774172707">正規表現技術入門</a></li>
+<li><a href="http://www.slideshare.net/kmizushima/java-4912958">Javaバイトコード入門</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>前回の記事では統一的に「機械語」という表現を用いていたが、より正確な表現ではLLVMの中間表現（LLVM IR）であるので、この記事ではこちらで記述する。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>会話に登場する“Mokkosu”とはプログラム言語<a href="http://lambdataro.sakura.ne.jp/mokkosu/">Mokkosu</a>のことである。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p>前回は「命令（Instruction）」という意味で<code>Inst</code>という名前にしたが、「命令の表現（Representation）」であること強調するために今回は<code>Repr</code>という名前にした。<a href="#fnref3" class="footnote-back">↩</a></p></li>
+<li id="fn4"><p>今回実装した正規表現は機能が小さすぎて、記事にある正規表現を実行できないので、少々アレンジしたもの用いることにする。<a href="#fnref4" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

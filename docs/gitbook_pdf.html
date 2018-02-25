@@ -1,0 +1,225 @@
+<h1>はじめに</h1>
+<p><a href="https://www.gitbook.com/">GitBook</a>はMarkdownなどで記述したドキュメントをHTMLやPDF、EPUBなどへ変換するツールである。GitBookにはPDFを作成する機能が標準で備わっているが、それの組版のできがそれほどよくなかったので、今回はPandocとLaTeXなどを用いて美しい組版のPDFドキュメントを作成することを目指す。また、このドキュメントは<a href="https://travis-ci.org/">Travis CI</a>上でコンパイルができるようにする。 この記事にある内容を行うことで、次のようなPDFが作成できる。</p>
+<p><a href="https://dwango.github.io/scala_text_pdf/scala_text.pdf" class="uri">https://dwango.github.io/scala_text_pdf/scala_text.pdf</a></p>
+<p>また、今回の成果は次のリポジトリにある。</p>
+<p><a href="https://github.com/dwango/scala_text_pdf" class="uri">https://github.com/dwango/scala_text_pdf</a></p>
+<h1>対象としたドキュメント</h1>
+<p>今回は<a href="https://github.com/dwango/scala_text">Scala Text</a>というドキュメントのPDF版を作成することにした。このドキュメントはプログラム言語Scalaの入門テキストであるが、Markdownに埋め込まれたScalaコードを<a href="https://github.com/tpolecat/tut">tut</a>というプログラムで実行していることが特徴である。</p>
+<h1>変換</h1>
+<p>次のような流れでPDFへ変換する。</p>
+<ol>
+<li><a href="http://www.scala-sbt.org/">sbt</a>でtutを実行し、Scalaコードの実行結果が埋め込まれたMarkdownを生成</li>
+<li><code>book.json</code>をコピー</li>
+<li>画像ファイルをコピー</li>
+<li>ソースコードをコピー</li>
+<li>SVG形式の画像をInkscapeでPDFへ変換</li>
+<li>PandocでLaTeXへ変換</li>
+<li>LuaLaTeXで<code>book.json</code>を解析し、目次と本文を生成</li>
+<li>LuaLaTeXファイルのコンパイル</li>
+</ol>
+<p>この流れは、次のシェルスクリプトにまとまっている。</p>
+<p><a href="https://github.com/dwango/scala_text_pdf/blob/master/setup.sh" class="uri">https://github.com/dwango/scala_text_pdf/blob/master/setup.sh</a></p>
+<h2>sbtの実行</h2>
+<p>これは次のように<code>sbt tut</code>をScala Textのルートディレクトリで実行するだけでよい。</p>
+<pre><code class="console">$ cd ./scala_text
+$ sbt tut
+$ cd -</code></pre>
+<p>終了すると、<code>./scala_text/gitbook/</code>にScalaのコードを実行した結果が埋め込まれたMarkdownファイルが生成される。</p>
+<h2><code>book.json</code>をコピー</h2>
+<p><code>book.json</code>とはGitBookのメタ情報を表わすJSONファイルであり、Scala Textでは次のようになっている。</p>
+<pre><code class="json">{
+  "structure": {
+    "readme": "INTRODUCTION.md",
+    "summary": "SUMMARY.md"
+  },
+  "plugins": [
+    "-search",
+    "include-codeblock",
+    "japanese-support",
+    "footnote-string-to-number",
+    "anchors",
+    "regexplace"
+  ],
+  "pluginsConfig": {
+    "regexplace": {
+      "substitutes": [
+        {"pattern": "<!-- begin answer id=\"(.*)\" style=\"(.*)\" -->", "flags": "g", "substitute": "<div><button type=\"button\" id=\"$1_show_answer_button\" style=\"display:block\" onclick=\"document.getElementById('$1').style.display='block'; document.getElementById('$1_show_answer_button').style.display='none'; document.getElementById('$1_hide_answer_button').style.display='block'; \">解答例を表示する</button><button type=\"button\" id=\"$1_hide_answer_button\" style=\"display:none\" onclick=\"document.getElementById('$1').style.display='none'; document.getElementById('$1_show_answer_button').style.display='block'; document.getElementById('$1_hide_answer_button').style.display='none'; \">解答例を隠す</button></div><div id=\"$1\" style=\"$2\">"},
+        {"pattern": "<!-- end answer -->", "flags": "g", "substitute": "</div>"}
+      ]
+    }
+  },
+  "title": "Scala研修テキスト"
+}</code></pre>
+<p>ここで重要なのは、目次を表わす<code>structure.summary</code>と序文を表す<code>structure.readme</code>である。この<code>book.json</code>をLaTeXファイルから読み込み、<code>structure.summary</code>にある目次ファイルを利用して本文を作成する。</p>
+<h2>SVG形式の画像をInkscapeでPDFへ変換</h2>
+<p>LaTeXではSVG形式の画像を読み込むことができないので、<a href="https://inkscape.org/ja/">Inkscape</a>を用いてPDFへ変換しそれを読み込むことにする。次のようなシェルスクリプトでSVG画像を変換する。</p>
+<pre><code class="bash">for f in ./img/*.svg
+do
+  if [[ $f =~ \./img/(.*)\.svg ]]; then
+    inkscape -z -D --file=`pwd`/img/${BASH_REMATCH[1]}.svg --export-pdf=`pwd`/${BASH_REMATCH[1]}.pdf --export-latex=`pwd`/${BASH_REMATCH[1]}.pdf_tex
+  fi
+doneB</code></pre>
+<h2>PandocでLaTeXへ変換</h2>
+<p>GitBookのMarkdownを全て<a href="http://pandoc.org/">Pandoc</a>を用いてTeXファイルへ変換する。</p>
+<pre><code class="bash">mkdir target
+for f in ./scala_text/gitbook/*.md
+do
+  if [[ $f =~ \./scala_text/gitbook/(.*)\.md ]]; then
+    cp $f ./target/
+    pandoc -o "./target/${BASH_REMATCH[1]}.tex" -f markdown_github+footnotes+header_attributes-hard_line_breaks-intraword_underscores --latex-engine=lualatex --chapters --listings --filter=filter.py $f
+  fi
+done</code></pre>
+<p>まず、Pandocは多彩なMarkdown拡張に対応している。<code>markdown_github+footnotes+header_attributes-hard_line_breaks-intraword_underscores</code>というのはGitHub Markdownに追加で次のようなものを有効にする。</p>
+<dl>
+  <dt>+footnote</dt>
+  <dd>脚注を書ける</dd>
+  <dt>+header_attributes</dt>
+  <dd><code># hoge { headers }</code>のような、ヘッダ情報を書ける
+  <dt>-hard_line_breaks</dt>
+  <dd>改行をパラグラフの終了とみなさない</dd>
+  <dt>-intraword_underscores</dt>
+  <dd>単語内の<code>_</code>による強調を許可する</dd>
+</dl>
+<p>また、それ以外のオプションの意味は次のようになっている。</p>
+<dl>
+  <dt>--latex-engine=lualatex</dt>
+  <dd>LaTeXのエンジンとしてLuaTeXを使う</dd>
+  <dt>--chapters</dt>
+  <dd>LaTeXのマークアップを`\chapter`からにする</dd>
+  <dt>--listings</dt>
+  <dd>ソースコードハイライティングにListingsを使う</dd> 
+</dl>
+<p>そして、最後の<code>--filter=filter.py</code>というのは、Pandocの汎用性の高さを示す機能のひとつであると考えている。これは、ソースファイルから一旦それのASTをJSON形式で出力し、それに対して<code>filter</code>で指定したスクリプトでツリーを操作し、操作されたJSONを最終的にターゲットへ変換する、ということが可能になっている。Pandocのマニュアルから図を引用する。 <a href="http://pandoc.org/scripting.html" class="uri">http://pandoc.org/scripting.html</a></p>
+<pre><code class="text">                         source format
+                              ↓
+                           (pandoc)
+                              ↓
+                      JSON-formatted AST
+                              ↓
+                           (filter)
+                              ↓
+                      JSON-formatted AST
+                              ↓
+                           (pandoc)
+                              ↓
+                        target format</code></pre>
+<p>この<code>filter</code>では今回次のような仕事を行う。</p>
+<ul>
+<li>ListingsでScalaのスタイルを使うようにする</li>
+<li>GitBookのファイルのインクルード<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>機能に対応する</li>
+<li>画像がURLの場合、ダウンロードする</li>
+<li>波ダッシュ<code>〜</code>（U+301C）を全角チルダ<code>～</code>（U+FF5E）へ変換する<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a></li>
+</ul>
+<p>このような処理をするPythonスクリプトは次のようになる。</p>
+<pre><code class="python">#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import os
+from pandocfilters import toJSONFilter, CodeBlock, RawBlock, Str, RawInline
+
+def mkListingsEnvironment(code):
+    return RawBlock('latex', "\\begin{lstlisting}[style=scala]\n" + code + "\n\\end{lstlisting}\n")
+
+def mkInputListings(src):
+    return RawInline('latex', "\\lstinputlisting[style=scala]{" + src + "}")
+
+def mkIncludegraphics(src):
+    return RawInline('latex', "\\includegraphics{img/" + src + "}")
+
+def filter(key, value, fmt, meta):
+    if key == 'CodeBlock':
+        [[ident, classes, kvs], code] = value
+        if 'scala' in classes:
+            return mkListingsEnvironment(code)
+    elif key == 'Link':
+        [_, text, [href, _]] = value
+        if text == [Str("include")]:
+            return mkInputListings(href)
+    elif key == 'Image':
+        [_, _, [src, _]] = value
+        if src.startswith("http"):
+            fileName = src.split("/")[-1]
+            os.system("cd img && curl -O " + src)
+            return mkIncludegraphics(fileName)
+    elif key == 'Str':
+        return(Str(value.replace(u"〜", u"～")))
+
+if __name__ == "__main__":
+    toJSONFilter(filter)</code></pre>
+<h2>LuaLaTeXで<code>book.json</code>を解析し、目次と本文を生成</h2>
+<p>今回はLaTeXの処理系に<a href="https://texwiki.texjp.org/?LuaTeX">LuaTeX</a>を採用したため、この部分はLuaコードで次のように実装する。よいことに、LuaTeXではJSONパーザーが提供されているのでそれを使えばよく、目次のMarkdownは簡単な形式だったので今回はやや手抜きだが正規表現で抜き出すこととした。</p>
+<pre><code class="lua">require("lualibs-util-jsn.lua")
+
+local target = "./target/"
+local bookJsonFile = "book.json"
+
+function read(file)
+  local handler = io.open(file, "rb")
+  local content = handler:read("*all")
+  handler:close()
+  return content
+end
+
+function readSummary(file)
+  local handler = io.open(file, "r")
+  local summary = {}
+
+  for l in handler:lines() do
+    local n = string.match(l, "%[.*%]%((.*)%.md%)")
+    table.insert(summary, n)
+  end
+  handler:close()
+
+  return summary
+end
+
+function getTeXFile(target, name)
+  return target .. name .. ".tex"
+end
+
+function getFileName(f)
+  return string.match(f, "(.*)%.md")
+end
+
+local bookJson = utilities.json.tolua(read(bookJsonFile))
+local readmeFile  = getTeXFile(target, getFileName(bookJson['structure']['readme']))
+local summaryFile = target .. bookJson['structure']['summary']
+
+tex.print("\\frontmatter")
+tex.print("\\input{" .. readmeFile .. "}")
+
+tex.print("\\tableofcontents")
+
+tex.print("\\mainmatter")
+for k, v in pairs(readSummary(summaryFile)) do
+  tex.print("\\input{" .. getTeXFile(target, v) .. "}")
+end</code></pre>
+<h2>LuaLaTeXファイルのコンパイル</h2>
+<p>LuaLaTeXファイルのコンパイルには<a href="https://texwiki.texjp.org/?Latexmk">latexmk</a>とMakeを用いた。latexmkは簡単な設定ファイルを作成すると、それによって適切にLaTeXファイルをコンパイルするプログラムである。次のようなlatexmkの設定ファイルと<code>Makefile</code>を用いた。</p>
+<pre><code class="pl">#!/usr/bin/env perl
+
+$pdflatex = 'lualatex %O %S --interaction=nonstopmode';
+$pdf_mode = 3;
+$bibtex = 'pbibtex';</code></pre>
+<pre><code class="mf">.PHONY : all clean
+
+all : scala_text.pdf
+
+clean :
+    latexmk -C
+    rm -r img target example_projects *.pdf *.pdf_tex book.json
+
+scala_text.pdf :
+    latexmk -pdf scala_text.tex</code></pre>
+<h1>Travis CI上によるコンパイル</h1>
+<p>さて、これらでGitBook MarkdownからPDFを作れるようになったので、Travis CI上でコンパイルできるようにする。LaTeXをTravis CI上でコンパイルすることに関しては<a href="http://qiita.com/yyu/items/e3451caa86779b94abe1">以前の記事</a>を参照して欲しい。 なお、今回の<code>.tarivs.yml</code>は次のようになっている。</p>
+<p><a href="https://github.com/dwango/scala_text_pdf/blob/master/.travis.yml" class="uri">https://github.com/dwango/scala_text_pdf/blob/master/.travis.yml</a></p>
+<h1>まとめ</h1>
+<p>このようにすることで、最終的にはある程度まともなPDFを作ることができた。もし、このPDFをよりよくする方法を思いついたり、知っていたりする場合は、この記事のコメントもしくは<a href="https://github.com/dwango/scala_text_pdf">Scala Text PDF</a>のIssue、または<a href="https://github.com/dwango/scala_text">Scala Text</a>のIssueのどれでもよいので、どれかで教えて欲しいと思う。</p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>GitBookはMarkdownのリンクを用いて、ファイルをインクルードする機能がある。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>波ダッシュはLaTeXでは意図した見た目にならない。<a href="http://www1.pm.tokushima-u.ac.jp/~kohda/tex/texlive.html" class="uri">http://www1.pm.tokushima-u.ac.jp/~kohda/tex/texlive.html</a><a href="#fnref2" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

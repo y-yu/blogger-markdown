@@ -1,0 +1,301 @@
+<h1>はじめに</h1>
+<p>前回の記事、<a href="http://qiita.com/yyu/items/07d56112bc42938aee05">階層構造を容易に拡張できる例外</a>では<code>:-&gt;</code>という型クラスを用いて例外（エラー値）<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>の階層構造を作るという内容を紹介した。しかし、<code>A :-&gt; B</code>と<code>B :-&gt; C</code>という二つのインスタンスがあったとしても、<code>A :-&gt; C</code>が作られないので不便であった。そこで今回は<code>A :-&gt; B</code>と<code>B :-&gt; C</code>という二つのインスタンスから<code>A :-&gt; C</code>を作るためのインスタンス<code>transitive</code>を作成する。 この記事はまず前回の記事で紹介した方法について述べ、その後前回の手法の課題を説明する。そして、今回作成した<code>transitive</code>について説明する。 なお、この記事で紹介するコードの完全なものは、次のリポジトリにある。</p>
+<p><a href="https://github.com/y-yu/ExtensibleException" class="uri">https://github.com/y-yu/ExtensibleException</a></p>
+<p>この記事を読んで分かりにくい部分や改善案を思いついた場合は、コメントなどで気軽に教えて欲しい。</p>
+<h1>階層構造を容易に拡張できる例外の課題</h1>
+<h2>階層構造を容易に拡張できる例外</h2>
+<p>まず、前回の記事の内容を説明する。一般的な継承を用いた例外を次のように作ったとする。</p>
+<pre><code class="scala">trait RootException extends Throwable
+
+case class DatabaseException(m: String) extends RootException
+
+case class HttpException(m: String) extends RootException
+
+trait FileException extends RootException
+
+case class ReadException(m: String) extends FileException
+
+case class WriteException(m: String) extends FileException</code></pre>
+<p>これは次のような階層構造になっている。</p>
+<pre><code class="text">RootException
+|
++---- DatabaseException
+|
++---- HttpException
+|
++---- FileException
+      |
+      +---- ReadException
+      |
+      +---- WriteException</code></pre>
+<p>ここに、データベースの例外とHTTPの例外をまとめた例外<code>DatabaseAndHttpException</code>を次のように作るものとする。</p>
+<pre><code class="scala">case class DatabaseAndHttpException(m: String) extends RootException</code></pre>
+<p>すると、継承による階層構造は次のようになる。</p>
+<pre><code>RootException
+|
++---- DatabaseException
+|
++---- HttpException
+|
++---- FileException
+|     |
+|     +---- ReadException
+|     |
+|     +---- WriteException
+|
++---- DatabaseAndHttpException</code></pre>
+<p>しかし、このままでは<code>Either</code>などで次のように書いた場合に望んだ結果にならない。</p>
+<pre><code class="scala">val e1 = for {
+  a <- Left(DatabaseException("db errer"))
+  b <- Left(HttpException("http errer"))
+} yield ???</code></pre>
+<p>この時、<code>e</code>の結果は<code>DatabaseException</code>と<code>HttpException</code>の共通の親である<code>RootException</code>となってしまい、この時、型の上では<code>FileException</code>と区別がつかなくなる。 そこで、次のような型クラス<code>:-&gt;</code>を用いて継承を用いない例外の階層を構築する<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>。</p>
+<pre><code class="scala">trait :->[-A, +B] {
+  def apply(a: A): B
+}</code></pre>
+<p>この型クラスは関数のような、<code>A</code>から<code>B</code>への安全な変換を定義するものであり、<code>:-&gt;</code>のインスタンスを次のように作成する。</p>
+<pre><code class="scala">object DatabaseAndHttpException {
+  implicit val databaseException = new (DatabaseException :-> DatabaseAndHttpException) {
+    def apply(a: DatabaseException): DatabaseAndHttpException =
+      DatabaseAndHttpException(s"database: ${a.m}")
+  }
+
+  implicit val httpException = new (HttpException :-> DatabaseAndHttpException) {
+    def apply(a: HttpException): DatabaseAndHttpException =
+      DatabaseAndHttpException(s"http: ${a.m}")
+  }
+}</code></pre>
+<p>そして、自明なインスタンスを<code>:-&gt;</code>のコンパニオンオブジェクトに定義しておく。</p>
+<pre><code class="scala">implicit def self[A]: A :-> A = new (A :-> A) {
+  def apply(a: A): A = a
+}
+
+implicit def superclass[A, B >: A]: A :-> B = new (A :-> B) {
+  def apply(a: A): B = a
+}</code></pre>
+<p>この型クラスのインスタンスがある場合はユーザーが定義した“安全な変換”ができるので、このインスタンスを使うように<code>Either</code>の<code>map</code>と<code>flatMap</code>を書き換える。</p>
+<pre><code class="scala">object Implicit {
+  implicit class ExceptionEither[L <: RootException, R](val ee: Either[L, R]) {
+    def map[L2 <: RootException, R2](f: R => R2)(implicit L2: L :-> L2): Either[L2, R2] = ee match {
+      case Left(e)  => Left(L2(e))
+      case Right(v) => Right(f(v))
+    }
+
+    def flatMap[L2 <: RootException, R2](f: R => Either[L2, R2])(implicit L2: L :-> L2): Either[L2, R2] = ee match {
+      case Left(e)  => Left(L2(e))
+      case Right(v) => f(v)
+    }
+
+    def as[L2 <: RootException](implicit L2: L :-> L2): Either[L2, R] = ee match {
+      case Left(e)  => Left(L2(e))
+      case Right(v) => Right(v)
+    }
+  }
+}</code></pre>
+<p>このようにすることで、次のように書くことができる。</p>
+<pre><code class="scala">val e2 = for {
+  a <- Left(DatabaseException("db errer"))
+  b <- Left(HttpException("http errer")).as[DatabaseAndHttpException]
+} yield ???</code></pre>
+<p>さきほどとは違い、<code>e2</code>の結果が<code>DatabaseAndHttpException</code>となり、型の上でも<code>FileException</code>など他の例外と区別することができる。</p>
+<h2>課題</h2>
+<p>この方法では冒頭に述べたように、<code>A :-&gt; B</code>と<code>B :-&gt; C</code>というインスタンスがあったとしても、<code>A :-&gt; C</code>が作られない。これに対しては次のようなインスタンスを定義すればよいと思うかもしれない。</p>
+<pre><code class="scala">implicit def transitive[A, B, C](implicit F: A :-> B, G: B :-> C): A :-> C = new (A :-> C) {
+  def apply(a: A): C = G(F(a))
+}</code></pre>
+<p>しかし、これでは次のようにimplicitパラメータの探索に失敗してしまう。</p>
+<pre><code>diverging implicit expansion for type utils.:->[exceptions.HttpException,B]</code></pre>
+<p>これは、<code>transitive</code>のimplicitパラメータ<code>F</code>を検索するときに<code>transitive</code>が参照され、という無限ループが発生しているものと思われる。</p>
+<h1><code>transitive</code>の定義</h1>
+<p>次のような方法で<code>transitive</code>を定義する。</p>
+<ol>
+<li>既存の型クラス<code>:-&gt;</code>の名前を<code>:~&gt;</code>へ変更する</li>
+<li>$A \rightarrow B, B \rightarrow C \Rightarrow A \rightarrow C$のような推移を含まない<strong>ワンステップ</strong>の変換を表す専用の型クラス<code>:-&gt;</code>を用意する</li>
+<li><code>:-&gt;</code>を用いて<code>transitive</code>を定義する</li>
+</ol>
+<h2>型クラス<code>:-&gt;</code>の名前を<code>:~&gt;</code>へ変更</h2>
+<p>まず、implicitパラメータの発散を防止するために、既存の型クラスの名前を変更し次のようにする<a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a>。</p>
+<pre><code class="scala">trait :~>[-A, +B] { self =>
+  def apply(a: A): B
+  def compose[C](that: B :~> C): A :~> C = new :~>[A, C] {
+    def apply(a: A): C = that(self(a))
+  }
+}</code></pre>
+<p>型クラスの名前を変えたので、<code>Either</code>の<code>map</code>と<code>flatMap</code>も次のように変更が必要である<a href="#fn4" class="footnote-ref" id="fnref4"><sup>4</sup></a>。</p>
+<pre><code class="scala">object Implicit {
+  implicit class ExceptionEither[L1 <: Throwable, R1](val ee: Either[L1, R1]) {
+    def map[L2 <: Throwable, R2](f: R1 => R2)(implicit F: L1 :~> L2): Either[L2, R2] = ee match {
+      case Left(e)  => Left(F(e))
+      case Right(v) => Right(f(v))
+    }
+
+    def flatMap[L2 <: Throwable, R2](f: R1 => Either[L2, R2])(implicit F: L1 :~> L2): Either[L2, R2] = ee match {
+      case Left(e)  => Left(F(e))
+      case Right(v) => f(v)
+    }
+
+    def as[L2 <: Throwable](implicit F: L1 :~> L2): Either[L2, R1] = ee match {
+      case Left(e)  => Left(F(e))
+      case Right(v) => Right(v)
+    }
+  }
+}</code></pre>
+<p>そして、自明なインスタンスを定義する。</p>
+<pre><code class="scala">object :~> {
+  implicit def self[A]: A :~> A = new (A :~> A) {
+    def apply(a: A): A = a
+  }
+
+  implicit def superclass[A, B >: A]: A :~> B = new (A :~> B) {
+    def apply(a: A): B = a
+  }
+}</code></pre>
+<h2>ワンステップの変換を表わす型クラス<code>:-&gt;</code>の定義</h2>
+<p>そして、ワンステップの変換しか含まない型クラス<code>:-&gt;</code>を定義する。</p>
+<pre><code class="scala">trait :->[-A, +B] {
+  def apply(a: A): B
+}</code></pre>
+<p>そして、例外間の関係（ツリー）はワンステップなので、型クラス<code>:-&gt;</code>のインスタンスとして定義する。</p>
+<pre><code class="scala">object DatabaseAndHttpException {
+  implicit val databaseException = new (DatabaseException :-> DatabaseAndHttpException) {
+      def apply(a: DatabaseException): DatabaseAndHttpException =
+        DatabaseAndHttpException(s"database: ${a.m}")
+    }
+
+  implicit val httpException = new (HttpException :-> DatabaseAndHttpException) {
+      def apply(a: HttpException): DatabaseAndHttpException =
+        DatabaseAndHttpException(s"http: ${a.m}")
+    }
+}</code></pre>
+<p>そして、次のように用いる。</p>
+<pre><code class="scala">def left[A](e: A) = Left[A, Unit](e)
+
+def e1 = left(DatabaseException("db error"))
+
+def e2 = left(HttpException("http error")
+
+{
+  import DatabaseAndHttpException._
+  val e6 = for {
+    a <- e1
+    b <- e2.as[DatabaseAndHttpException]
+  } yield ()
+}</code></pre>
+<p>前回とは違って、<code>import</code>でインスタンスを明示的に呼び出す必要がある。</p>
+<h2>型クラス<code>:-&gt;</code>を用いた<code>transitive</code>の定義</h2>
+<p>次のようにする。</p>
+<pre><code class="scala">object :~> {
+  implicit def self[A]: A :~> A = new (A :~> A) {
+    def apply(a: A): A = a
+  }
+
+  implicit def superclass[A, B >: A]: A :~> B = new (A :~> B) {
+    def apply(a: A): B = a
+  }
+
+  implicit def transitive[A, B, C](implicit F: A :-> B, G: B :~> C): A :~> C = new (A :~> C) {
+    def apply(a: A): C = G(F(a))
+  }
+}</code></pre>
+<p>このように、ワンステップの変換を表わす<code>A :-&gt; B</code>と、ワンステップ以上の変換を表す<code>B :~&gt; C</code>を用いて<code>A :~&gt; C</code>を作成している。</p>
+<h1>遷移の例</h1>
+<p>定義した<code>transitive</code>を用いて、次のような例を考える。先ほど定義した<code>DatabaseAndHttpException</code>と<code>ReadException</code>をまとめた<code>DatabaseAndHttpAndFileReadException</code>を次のように作成する。</p>
+<pre><code class="scala">case class DatabaseAndHttpAndFileReadException(m: String) extends RootException</code></pre>
+<p>この時点で、継承による階層構造は次のようになっている。</p>
+<pre><code>RootException
+|
++---- DatabaseException
+|
++---- HttpException
+|
++---- FileException
+|     |
+|     +---- ReadException
+|     |
+|     +---- WriteException
+|
++---- DatabaseAndHttpException
+|
++---- DatabaseAndHttpAndFileReadException</code></pre>
+<p>そして、階層構造を表すインスタンスを作成する。</p>
+<pre><code class="scala">object DatabaseAndHttpAndFileReadException {
+  implicit val databaseAndHttpException = new (DatabaseAndHttpException :-> DatabaseAndHttpAndFileReadException) {
+    def apply(a: DatabaseAndHttpException): DatabaseAndHttpAndFileReadException =
+      DatabaseAndHttpAndFileReadException(s"database and http: ${a.m}")
+  }
+
+  implicit val fileReadException = new (ReadException :-> DatabaseAndHttpAndFileReadException) {
+    def apply(a: ReadException): DatabaseAndHttpAndFileReadException =
+      DatabaseAndHttpAndFileReadException(s"file read: ${a.m}")
+  }
+}</code></pre>
+<p>そして、次のような<code>for</code>式を実行する。</p>
+<pre><code class="scala">def left[A](e: A) = Left[A, Unit](e)
+
+def e1 = left(DatabaseException("db error"))
+
+def e2 = left(HttpException("http error")
+
+def e3 = left(ReadException("file read error"))
+
+{
+  import DatabaseAndHttpException._
+  import DatabaseAndHttpAndFileReadException._
+  val e9 = for {
+    a <- e1
+    b <- e2
+    c <- e3.as[DatabaseAndHttpAndFileReadException]
+  } yield ()
+}</code></pre>
+<p>さらに、<code>DatabaseAndHttpAndFileReadException</code>に<code>WriteException</code>をも加えた例外<code>DatabaseAndHttpAndFileException</code>を作成する。</p>
+<pre><code class="scala">case class DatabaseAndHttpAndFileException(m: String) extends RootException</code></pre>
+<p>まずは同様にインスタンスを定義する。</p>
+<pre><code class="scala">object DatabaseAndHttpAndFileException {
+  implicit val databaseAndHttpAndFileReadExcepion = new (DatabaseAndHttpAndFileReadException :-> DatabaseAndHttpAndFileException) {
+    def apply(a: DatabaseAndHttpAndFileReadException): DatabaseAndHttpAndFileException =
+      DatabaseAndHttpAndFileException(s"database and http and file read: ${a.m}")
+  }
+
+  implicit val fileWriteException = new (WriteException :-> DatabaseAndHttpAndFileException) {
+    def apply(a: WriteException): DatabaseAndHttpAndFileException =
+      DatabaseAndHttpAndFileException(s"file write: ${a.m}")
+  }
+}</code></pre>
+<p>そして、次のように実行する。</p>
+<pre><code class="scala">def left[A](e: A) = Left[A, Unit](e)
+
+def e1 = left(DatabaseException("db error"))
+
+def e2 = left(HttpException("http error")
+
+def e3 = left(ReadException("file read error"))
+
+def e4 = left(WriteException("file write error"))
+
+{
+  import DatabaseAndHttpException._
+  import DatabaseAndHttpAndFileReadException._
+  import DatabaseAndHttpAndFileException._
+  val e10 = for {
+    a <- e1
+    b <- e2
+    c <- e3
+    d <- e4.as[DatabaseAndHttpAndFileException]
+  } yield ()
+}</code></pre>
+<p>このように、<code>transitive</code>はどれだけでもインスタンスを繋げることができる。</p>
+<h1>まとめ</h1>
+<p>このように、前回の記事では定義されていなかった<code>transitive</code>を定義して、ExtensibleExceptionをより使いやすくすることができた。 今回の例では、型クラス<code>:-&gt;</code>のインスタンスを例外を表すクラスのコンパニオンオブジェクトに定義しているため、例外の階層を拡張するたびに<code>import</code>が増えているように見えるが、これはどこかにimplicitパラメータの置き場オブジェクトを定義しておいて、全てのimplicitパラメータをひとつの場所に置けば解決できると考えている。 また、このExtensible Exceptionは型クラスによって構成されているため、型クラスを持つ他の言語（たとえばRustなど）への応用もできると考えている。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="http://stackoverflow.com/questions/24775080/how-to-establish-an-ordering-between-types-in-haskell">How to establish an ordering between types in Haskell</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>この記事では、“エラー値”と“例外”という言葉を特に区別せずに使う。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>前回の記事では<code>cast</code>というメソッド名を使っていたが、プログラムが冗長になるので<code>apply</code>というメソッド名に変更した。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p>付け加えて、手動で<code>transitive</code>のようなインスタンスを生成するためのメソッド<code>compose</code>を用意した。<a href="#fnref3" class="footnote-back">↩</a></p></li>
+<li id="fn4"><p>前回は<code>L1</code>や<code>L2</code>の上限として<code>RootException</code>を用いていたが、より汎用的にするために今回は<code>Throwable</code>を用いている。<a href="#fnref4" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

@@ -1,0 +1,208 @@
+<p>English version is <a href="http://qiita.com/yyu/items/5dc240273d611605550a">here</a>.</p>
+<p>これは<a href="http://qiita.com/advent-calendar/2016/dwango">ドワンゴ Advent Calendar 2016</a>の15日目の記事です。 <a href="mailto:前日は@kimutanskさんの">前日は@kimutanskさんの</a><a href="http://qiita.com/kimutansk/items/d6daca473440462634a0">Googleが考えるストリームデータ処理とは？</a>でした。</p>
+<p>この記事を読んで、分からない点や改善するべき点を見つけた場合は、コメントなどで気軽に指摘して欲しいと思います。</p>
+<h1>はじめに</h1>
+<p>_Mental Poker_とは、電話やインターネット越しに公平な第三者<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>なしで行うことができるポーカーです。電話やインターネット越しですから、参加者の中に悪意のあるプレイヤーがいると、たとえば自分にとって都合のよいカードをドローしたように装うことや、本当はドローしていないカードを捨てるなど様々な不正ができます。Mental Pokerは公平な第三者がいないにも関わらず、このような不正を排除し、かつプレイヤーの手札といった秘密を守ることができる画期的なプロトコルです。 Mental Pokerは1981年にRSA暗号を発明したShamir、RivestそしてAdlemanにより発明された伝統あるプロトコルであり、最近でも新しい論文が出るなど研究が続いています。ポーカーに必要な操作である「シャッフル」「ドロー」「手札の公開」を用いれば、麻雀など他のゲームも同様に実行できることから、Mental Pokerでより公平なゲームを提供できると考えられていました。 ところが、「人狼」といったより複雑なゲームをMental Pokerの道具で実行できるのかは分かっていませんでした。人狼とはプレイヤーを「村人」と「人狼」という2つの陣営に分けるゲームであり、村人となったプレイヤーは他のプレイヤーが村人であるか人狼であるか区別ができない一方で、人狼となったプレイヤーは全てのプレイヤーを村人であるか人狼であるか区別することができます。このような柔軟なグループ分けを公平な第三者なしで実行することは困難だと思われていました。ところが最近になって、このようなグループ分けを実行できるという論文が投稿され、人狼もMental Pokerの道具で実行できるのではないかと考えられつつあります。 この記事ではまずMental Pokerについての直感的な説明を述べて、次に秘匿グループ分けプロトコルについて説明します。そしてMental Pokerによる投票について述べ、最後にこれらを用いて公平な第三者<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>を排除した人狼を構成します。</p>
+<h1>直感的なMental Poker</h1>
+<p>ここでは箱や南京錠といった物理的な仕組みを使ってMental Pokerを構成します。なお数学的な方法については参考文献を見てただきたいと思います。</p>
+<h2>箱と南京錠</h2>
+<p>物理的な箱と南京錠、そしてカードを用いて離れた場所にいるアリスとボブがシャッフル・ドロー・公開という3つの操作を不正なく行う方法について考えます。 まずここで言う箱というのは、外側からは何が入っているのかが全く分からない入れ物のことです。また箱には任意の数の南京錠を取り付けることができます。箱に自分の取り付けた南京錠しか取り付けられていない場合、自分の持っている鍵を使って南京錠を取り外し中身を見ることができますが、1つでも他人の南京錠が取り付けられている箱を開けることはできません。 また、簡単のためここではアリスとボブの2人でプロトコルを実行するものとします。</p>
+<h2>シャッフル</h2>
+<p>$n$枚のカードのシャッフルを箱と南京錠を用いて次のように行います。</p>
+<ol>
+<li>アリスはカードを1枚ずつ箱の中に入れ、全てに南京錠$A_O$を取り付けた後で箱をシャッフルする</li>
+<li>アリスは全ての箱を宅配便などを使ってボブに送信する</li>
+<li>ボブは箱の束をシャッフルする</li>
+<li>ボブは箱$i$について、1つ1つにボブの南京錠$B_i$を取り付ける</li>
+<li>ボブは全ての箱をアリスに送信する</li>
+<li>アリスは全ての箱から南京錠$A_O$を取り外す</li>
+<li>アリスは箱$i$について、1つ1つにアリスの南京錠$A_i$を取り付ける</li>
+</ol>
+<p>（2）でボブに送られた箱には全てアリスの南京錠が取り付けられているので、ボブは箱を開けることができません。（3）でボブが箱の束をシャッフルすることで、アリスがたとえ意図的な順番に箱を並べたとしても、ボブにシャッフルされてしまうため意味がないようにしています。ボブは箱の中身を見ることができないため、たとえ箱を意図的な順番に並べたとしても意味がありません。 また、アリスは南京錠$A_O$を箱に取り付けた後、箱をボブに渡してボブに渡した後に一度それを外しています。これはアリスが最初から箱の中身によって別の南京錠を取り付けてしまうと、アリスは南京錠と箱の中のカードの対応表を作れてしまいます。するとボブの南京錠が付いていたとしても、どの南京錠が外れるかによってアリスは箱の中身を特定することができてしまい公平性を失ないます。これを避けるためにアリスは合計で2回南京錠を取り付けるようにしています。</p>
+<h2>ドロー</h2>
+<p>次にドローです。アリスが山札<a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a>から1枚のカードを選んでドローすると考えます。シャッフルが終わった時点で山札はアリスのところにあります。</p>
+<ol>
+<li>アリスは山札から箱$i$を1つ選び、$i$をボブへ送信する</li>
+<li>ボブは箱$i$に取り付けた南京錠$B_i$の鍵をアリスへ送信する</li>
+<li>アリスはボブから受信した鍵を用いて南京錠$B_i$を取り外す</li>
+<li>アリスは箱$i$から自分の取り付けた南京錠$A_i$を取り外し、中身のカードを得る</li>
+</ol>
+<p>こうすることでアリスはボブに知られることなくカードをドローすることができます。</p>
+<h2>公開</h2>
+<p>たとえばアリスがドローしたカードをボブに公開する場合、アリスはボブにカードを送信するだけです。</p>
+<h2>検証</h2>
+<p>不正がないことを検証するために、アリスとボブは自分の南京錠の鍵を全て公開して箱の中身を確認します。またアリスとボブが手札を持っている場合、それも公開します。カードに重複や紛失があった場合は誰かが不正をしたものと分かります。</p>
+<h2>直感的なMental Pokerの課題</h2>
+<p>これでシャッフルやドローといった操作ができるわけですが、いくつか課題があります。 まず、この方法では最後に箱を全て開けて中身を確認することで不正がなかったかどうかを判断しています。そうすると当然手札などを公開する必要もあり、これによってプレイヤーの戦略が明らかになってしまう可能性があります。従って、手札を公開することなく不正を明らかにする必要があります。 なお、このMental Pokerを数学的な方法で実装した例として僕の<a href="http://qiita.com/yyu/items/8d8c82ba729b06b26e67">以前の記事</a>があります<a href="#fn4" class="footnote-ref" id="fnref4"><sup>4</sup></a>。</p>
+<h1>秘匿グループ分けプロトコル</h1>
+<p>秘匿グループ分けプロトコルは論文<a href="#fn5" class="footnote-ref" id="fnref5"><sup>5</sup></a>で提案されたものです。このプロトコルの特徴はまず公平な第三者が不要である点と、3つ以上のグループに分ける場合あるグループに所属しているメンバーは自分と同じグループに所属しているメンバーを知ることができる一方、他のプレイヤーがどのグループに所属しているのかは分からないことです。 この節ではまずこのプロトコルを構成するために必要なナンバーカードについて説明して、次にシャッフルを定義し、最終的プロトコルを説明します。 なおこの内容は<a href="http://qiita.com/yyu/items/17c1b16d1831372f455b">以前の記事</a>の説明を加筆・修正したものです。</p>
+<h2>ナンバーカード</h2>
+<p>このプロトコルではナンバーカードと呼ばれる次のような番号が印刷されたカード<a href="#fn6" class="footnote-ref" id="fnref6"><sup>6</sup></a>を用います。</p>
+\[
+\def\card#1{\boxed{\vphantom{1}#1\,}}
+
+\card{1}\,\card{2}\,\card{3}\,\card{4} \cdots \card{n}
+\]
+<p>これらのカードはいずれも裏が$\card{?}$となっていて、裏になったカードを区別したり、裏になったカードの表の数字を推測したりすることはできません。 また、番号順に並んだカードに置換$x$を適用したカードの並びを次のように書きます。</p>
+\[
+\card{?}\, \card{?} \cdots \card{?}\, (x)
+\]
+<p>カードが番号順に並んでいる場合、特別に$id$を使って次のように書きます。</p>
+\[
+\card{1}\, \card{2} \cdots \card{N}\, id
+\]
+<h2>Pile-Scramble Shuffle</h2>
+<p>Pile-Scramble Shuffleについて述べます。これはカード列の全ての置換の中から、一様な確率で1つの置換を選びそれを適用する操作です。</p>
+\[
+\def\pss{\left\lvert\Big\lvert \card{?} \middle\vert \card{?} \middle\vert \cdots \middle\vert \card{?} \Big\rvert\right\rvert}
+
+\pss\, (x) \rightarrow \card{?}\, \card{?} \cdots \card{?}\, (rx)
+\]
+<p>これはカード列$x$に対してランダムな置換$r$を選びそれを適用したことを示します。直感的に言うと単にカードをシャッフルするだけです。</p>
+<h2>置換のランダマイズ</h2>
+<p>ある置換$\tau$と同じ型<a href="#fn7" class="footnote-ref" id="fnref7"><sup>7</sup></a>に属する置換$\rho$をランダムに選ぶ操作を定義します。これを直感的に説明すると、「あみだくじ」にランダムな横線を入れる操作に似てますが、元のあみだくじの縦線と縦線の間に横線が1本もない場所に新たな線を書き加えることはできません。このようにすることで、同じ部分が切れているあみだくじをランダムに生成することができます。</p>
+\[
+\def\twopair#1#2{%
+  \begin{matrix}
+      #1 \\
+      #2
+  \end{matrix}
+}
+\def\twocards#1#2{\twopair{\card{#1}}{\card{#2}}}
+\def\twopss#1#2{\left\lvert\left\lvert \twocards{?}{?} \middle\vert \twocards{?}{?} \middle\vert \cdots \middle\vert \twocards{?}{?} \right\rvert\right\rvert \twopair{(#1)}{(#2)}}
+\]
+<ol>
+<li><p>順番に並んだカード列を2つ用意し裏にする</p>
+\[
+\card{1}\,\card{2} \cdots \card{n} \rightarrow \card{?}\,\card{?} \cdots \card{?} \\
+\card{1}\,\card{2} \cdots \card{n} \rightarrow \card{?}\,\card{?} \cdots \card{?}
+\]</li>
+<li><p>2つをまとめてPile-Scramble Shuffleを適用する</p>
+\[
+\twopss{id}{id} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(\sigma)}{(\sigma)}
+\]</li>
+<li><p>下のカード列に$\tau$を適用する</p>
+\[
+\twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(\sigma)}{(\sigma)} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(\sigma)}{(\tau\sigma)}
+\]</li>
+<li><p>2つをまとめてPile-Scramble Shuffleを適用する</p>
+\[
+\twopss{\sigma}{\tau\sigma} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(r\sigma)}{(r\tau\sigma)}
+\]</li>
+<li><p>2つのカード列のうち上のカード列を開示して、上のカード列が順番に並ぶように上下のカードペアを並び換える。これにより、下の行は$(r\sigma)^{-1} = \sigma^{-1}r^{-1}$の並び換えを適用される。よって、$\sigma^{-1}r^{-1}r\tau\sigma = \sigma^{-1}\tau\sigma$というカード列が得られる（ただし、$i_1, \dots, i_n$は$1$から$n$の中から重複しないよう任意に選んだ数とします）</p>
+\[
+\twocards{i_1}{?}\, \twocards{i_2}{?} \cdots \twocards{i_n}{?} \twopair{r\sigma}{(r\tau\sigma)} \rightarrow \twocards{1}{?}\, \twocards{2}{?} \cdots \twocards{n}{?} \twopair{id}{(\sigma^{-1}r^{-1}r\tau\sigma)} = \twocards{1}{?}\, \twocards{2}{?} \cdots \twocards{n}{?} \twopair{id}{(\sigma^{-1}\tau\sigma)} 
+\]</li>
+<li><p>生成した次のカード列$\sigma^{-1}\tau\sigma$を$\rho$とする</p>
+\[
+\card{?}\, \card{?} \cdots \card{?}\, (\sigma^{-1}\tau\sigma)
+\]</li>
+</ol>
+<h2>プロトコル</h2>
+<p>秘匿グループ分けプロトコルについて説明します。まずプレイヤーが$n$人おり、これを$m$個のグループ$A_1, A_2, \dots, A_m$にグループ分けすることを考えます。また$i = 1, 2, \dots, k$として、人数が$r_i$人のグループが$m_i$個あるとすると、$n = \sum_{i=1}^{k}m_ir_i$であり$m = \sum_{i=1}^{k}m_i$となります。なお、これには$1$から$n + m$までのカードを$2r$枚の合計で$2r(n + m)$枚のカードを使います。 まず$1$から$n$までのカードをそれぞれプレイヤー$1$からプレイヤー$n$に割り当て、そして$n + 1$から$n + m$のカードをそれぞれグループ$A_1$から$A_m$に割り当てます。整理すると次の表のようになります。</p>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: center;">カードの番号</th>
+<th style="text-align: center;">割り当て</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: center;">$1$</td>
+<td style="text-align: center;">プレイヤー$1$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$\vdots$</td>
+<td style="text-align: center;">$\vdots$</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;">$n$</td>
+<td style="text-align: center;">プレイヤー$n$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$n + 1$</td>
+<td style="text-align: center;">グループ$A_1$</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;">$\vdots$</td>
+<td style="text-align: center;">$\vdots$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$n + m$</td>
+<td style="text-align: center;">グループ$A_m$</td>
+</tr>
+</tbody>
+</table>
+<p>これを用いて次のようにします。</p>
+<ol>
+<li>$\left&lt; (r_1 + 1)^{m_1}, (r_2 + 1)^{m_2}, \dots, (r_k + 1)^{m_k}\right &gt;$の型である置換に属する任意の$\tau$を選ぶ。ただし、この$\tau$を巡回置換の積で表したとき、その各々の要素は所属を表すナンバーを含むようにする</li>
+<li>$r = \text{max}(r_1, \dots, r_k)$として、ランダマイズに用いる$\sigma$を$2r$個まとめて作成する。ただし$\sigma$をつくるときは$1$枚目から$n$枚目のカードについてのみPile-Scramble Shuffleを適用する</li>
+<li>（2）の$\sigma$を用いて$\rho$を作成する。同じ$\sigma$を用いて$\tau^2$から$\rho^2$を作成できるので、同様に$\rho^2, \dots, \rho^r$を作成する</li>
+<li>プレイヤー$i$はカード列$\rho, \rho^2, \dots, \rho^r$の左から$i$番目をそれぞれ一枚ずつドローする。各プレイヤーは所属を表すカードを一枚と、同じグループの他のメンバー全員のカードを一枚ずつ得る</li>
+</ol>
+<p>このようにすることで、プレイヤーをグループ分けするこができます。秘匿グループ分けプロトコルはシャッフルやドロー、公開の操作で構成されているので、Mental Pokerで提供されるシャッフル・ドロー・公開を用いて実装可能であると考えられます。なお、秘匿グループ分けプロトコルをプログラムで実装したものが<a href="https://gist.github.com/y-yu/e8b9d2a83c71f000646dc4ce58f0efb1">このGist</a>にあります。</p>
+<h1>投票</h1>
+<p>人狼を行うにあたって投票が必要になります。ここでの投票とは、公平な第三者なしでかつ無記名によりいくつかの選択肢の中から多数決である選択を決定するために用いるプロトコルです。人狼では次の2つにおいて投票を使います。</p>
+<ul>
+<li>プレイヤー全員でプレイヤーの中から処刑するプレイヤーを決めるとき</li>
+<li>人狼が殺害する村人を決めるとき</li>
+</ul>
+<p>実は投票をナンバーカードを用いて行うことができ、またこれらもシャッフルやドロー、公開で構成されているのでMental Pokerを用いて実現できます。</p>
+<h2>プロトコル</h2>
+<p>ナンバーカードで投票を行うときは次のようにします。なお投票者は$1, 2, \dots, n$までの$n$人がいるものとして、それぞれが$1, 2, \dots, m$の$m$個の選択肢のうちのどれかに1票を投票するものとします。</p>
+<ol>
+<li><p>投票者$i$は$1, \dots, m$のナンバーカードを2つ用意し、両方にPile-Scramble Shuffleを適用する</p>
+\[
+\twopss{id}{id} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(r)}{(r)}
+\]</li>
+<li>投票者$i$は上のカード列を全てドローし、投票する$k$が左端になるように下のカード列を並び換える</li>
+<li><p>投票者$1$は投票者$i$のカード列の左端のカードを全て集める（投票者$1$は適当に選んでいるので、どのプレイヤーが実行してもよい）</p>
+`<code>math  \card{?}\, \card{?} \cdots \card{?}</code></li>
+<li>投票者$1$は（3）で集めた$n$枚のカードにPile-Scramble Shuffleを適用する</li>
+<li>投票者$1$は（5）でシャッフルされた山札を全てドローしてカードを公開する</li>
+<li><p>（6）で公開されたカードの番号の数を集計し、最も多い番号を決定する</p></li>
+</ol>
+<p>このプロトコルをMental Pokerで実行するにあたっては、シャッフルされた山札を再びシャッフルできなくてはなりません。これを再シャッフルといい、再シャッフルが可能なMental Pokerの研究もあります。直感的な説明をすると南京錠を追加で取り付けずに箱をただシャッフルして次のプレイヤーに回す、という操作を繰り返せば再シャッフルとなります。</p>
+<h1>Mental Pokerによる人狼</h1>
+<p>それではいよいよMental Pokerで人狼を構成します。</p>
+<ol>
+<li>秘匿グループ分けプロトコルを用いて$n$人のプレイヤーを人狼$m$人と村人$l$人に分ける（ただし、村人は他のプレイヤーが村人か人狼かを判別できてはならないので、$1$人のグループを$l$個作る）</li>
+<li>夜の場合、人狼は人狼だけで投票を行い殺害する村人を決定する（人狼は、他の人狼プレイヤーを把握しているので、人狼ではないプレイヤーが村人であると判定できる）
+<ul>
+<li>いずれかの人狼は殺害が決まった村人にそのことを通知し、殺害された村人はゲームから退場する</li>
+<li>もし夜が終わった時、村人が誰も殺されなかった場合は直ちに村人の勝利となる（人狼が全て処刑されているものとみなす）</li>
+</ul></li>
+<li>昼の場合、全てのプレイヤーは投票を行い処刑するプレイヤーを決める
+<ul>
+<li>処刑されたプレイヤーはゲームから退場する</li>
+</ul></li>
+<li>（2）と（3）を交互に繰り返す</li>
+<li>人狼は、人狼の数が村人の数と同じまたは多くなった場合に勝利を宣言できる。人狼が勝利を宣言した場合、死亡していない全てのプレイヤーは（1）でドローした所属を示すナンバーカードを公開し、人狼と村人の数を明らかにする。もし村人と人狼の数が等しいまたは人狼の方が多い場合は人狼の勝利となり、もし村人の数が人狼の数より多い場合は村人の勝利となる</li>
+</ol>
+<p>このようにすることで、人狼を公平な第三者（ゲームマスター）なしで構成することができます。</p>
+<h1>まとめ</h1>
+<p>従来までMental Pokerでは不可能だろうと考えられていた人狼のような複雑なゲームをMental Pokerの道具を用いて実行することができると考えられます。Mental Pokerはプログラム言語で実装できるため、Mental Pokerの道具で人狼ができるということは、公平な第三者なし人狼をコンピューター上で実行できると思われます。 ただ、いくつか課題もあります。ゲームから取り除かれるとはいえ、殺害されたプレイヤーには通知してきたプレイヤーが人狼であると知られてしまいます。この部分を改良して通知するプレイヤーを分からなくできれば、さらにゲームマスターがある人狼に近づくと考えられます。 また、このゲームマスターなし人狼では勝利判定がゲームマスターあり人狼とは異なっており、最後に人狼が勝利を宣言するか、あるいは夜に誰も殺害されないという方法でどちらの陣営が勝利したのかを判定しています。これによりゲームマスターあり人狼と比べて、たとえば勝っていないにも関わらず人狼が勝利を宣言するなどといった、プレイヤー自身の所属する陣営に不利な行動を取る選択肢が増えています。このゲームを考えるにあたっては「プレイヤーは自身の所属する陣営にとって不利になるような行動をしない」という仮定の下に正しくゲームを進めることができますが、この部分を改良する必要があるかもしれません。 さらに進んだ議論として、村人と人狼以外にも様々な役職を追加したルールもあるので、それに対応していくことも今後の課題であると思います。 なお、この記事で紹介した秘匿グループ分けプロトコルについては、僕たちがコミックマーケット91にて頒布する<a href="https://blog.urandom.team/post/c91-sample/">urandom vol.3</a>にて詳しく解説しましたので、こちらも参考になると思います。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="https://ipsj.ixsq.nii.ac.jp/ej/?action=pages_view_main&amp;active_action=repository_view_main_item_detail&amp;item_id=175767&amp;item_no=1&amp;page_id=13&amp;block_id=8">カードを用いた秘匿グループ分けプロトコル</a></li>
+<li><a href="http://qiita.com/yyu/items/8d8c82ba729b06b26e67">A TTP-free mental poker protocol achieving player confidentiality</a></li>
+<li><a href="http://www.tdx.cat/bitstream/handle/10803/5804/jcr1de1.pdf">Contribution to Mental Poker</a></li>
+<li><a href="http://sci.kj.yamagata-u.ac.jp/~waki/jpn/GroupText.pdf">代数学IIのテキスト</a></li>
+<li><a href="https://gist.github.com/y-yu/e8b9d2a83c71f000646dc4ce58f0efb1">grouping.py</a></li>
+<li><a href="http://qiita.com/yyu/items/17c1b16d1831372f455b">Mental Pokerを用いた秘密グループ分けプロトコル</a></li>
+<li><a href="https://blog.urandom.team/post/c91-sample/">urandom vol.3</a></li>
+<li><a href="https://gumroad.com/l/zjTOY#">urandom vol.2</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>公平な第三者とは、ゲームに参加するいずれのプレイヤーに対しても同じく振る舞うことが保証されている審判のような存在のことです。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>人狼ではこの公平な第三者を「ゲームマスター」と呼びます。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p>なおここで言う山札とは先ほど述べたシャッフルが終わった後の箱の束を指します。<a href="#fnref3" class="footnote-back">↩</a></p></li>
+<li id="fn4"><p>効率などを考慮してあるので、この直感的な説明をそのまま実装したものとはなっていません。<a href="#fnref4" class="footnote-back">↩</a></p></li>
+<li id="fn5"><p><a href="https://ipsj.ixsq.nii.ac.jp/ej/?action=pages_view_main&amp;active_action=repository_view_main_item_detail&amp;item_id=175767&amp;item_no=1&amp;page_id=13&amp;block_id=8" class="uri">https://ipsj.ixsq.nii.ac.jp/ej/?action=pages_view_main&amp;active_action=repository_view_main_item_detail&amp;item_id=175767&amp;item_no=1&amp;page_id=13&amp;block_id=8</a><a href="#fnref5" class="footnote-back">↩</a></p></li>
+<li id="fn6"><p>この節の中で以後「カード」と言う場合、暗黙的にナンバーカードを指すものとします。<a href="#fnref6" class="footnote-back">↩</a></p></li>
+<li id="fn7"><p>置換$\tau$を互いに素な巡回置換の積として表わした時、$i = 1, 2, \dots, k$に対して長さが$r_i$の巡回置換がちょうど$m_i$個現れるならば、$\tau$は型$\left&lt; r_1^{m_1}, r_2^{m_2}, \dots, r_k^{m_k}\right &gt;$を持つとします。<a href="#fnref7" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

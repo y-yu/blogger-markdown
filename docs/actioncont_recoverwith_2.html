@@ -1,0 +1,55 @@
+<h1>はじめに</h1>
+<p><a href="http://qiita.com/yyu/items/7b37b9a8ffca80c5ce96">ActionCont.recoverWithを作る</a>では、<code>ActionCont.recoverWith</code>という次のような型を持つメソッドを作った。</p>
+<pre><code class="scala">def recoverWith[A](actionCont: ActionCont[A])(pf: PartialFunction[Throwable, ActionCont[A]])(implicit ec: ExecutionContext): ActionCont[A]</code></pre>
+<p>しかし、この関数には致命的な問題点があったので、この記事ではその問題点に関する説明と、回避するための方法について解説する。</p>
+<h1><code>ActionCont.recoverWith</code>の問題点</h1>
+<p>現在の<code>ActionCont.recoverWith</code>は次のように実装されている。</p>
+<pre><code class="scala">def fakeRun[A](actionCont: ActionCont[A])(implicit ec: ExecutionContext): Future[Result] =
+  actionCont.run(value => Future.successful(Results.Ok))
+
+def recoverWith[A](actionCont: ActionCont[A])(pf: PartialFunction[Throwable, ActionCont[A]])(implicit ec: ExecutionContext): ActionCont[A] =
+  fromFuture(fakeRun(actionCont).map(_ => actionCont).recover(pf)).flatten</code></pre>
+<p>端的に述べると、<code>ActionCont.recoverWith</code>は後の継続を繰り返し呼ばないように配慮したが、<code>fakeRun</code>により、<code>ActionCont.recoverWith</code>に入力されたActionContを2回呼び出してしまう。前回の記事で出したような副作用がないような例であると問題がなく見えるが、副作用を入れた次のような例を作ると簡単に壊れてしまう<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>。</p>
+<pre><code class="scala">import scalaz.std.scalaFuture._
+
+def add(x: Int, y: Int): ActionCont[Int] = ActionCont(k => k(x + y))
+
+def sideEffect(): ActionCont[Unit] =
+  ActionCont { k =>
+    println("side effect")
+    k(())
+  }
+
+val x = ActionCont.recoverWith(for {
+  a <- add(1, 2)
+  b <- sideEffect()
+} yield
+  Results.Ok("")
+) {
+  case _ =>
+    ActionCont.successful(Results.Forbidden(""))
+}
+
+x.run_</code></pre>
+<p>実行すると次のように、関数<code>sideEffect</code>で生成したActionContが2回実行されていることが分かる。</p>
+<pre><code>side effect
+side effect</code></pre>
+<h1>副作用に対して安全な<code>ActionCont.recoverWith</code></h1>
+<p>次のように実装する。</p>
+<pre><code class="scala">def recoverWith[A](actionCont: ActionCont[A])(pf: PartialFunction[Throwable, ActionCont[A]])(implicit ec: ExecutionContext): ActionCont[A] = {
+  class ResultContainer(val value: A) extends Result(header = ResponseHeader(200), body = Enumerator.empty)
+
+  fromFuture(actionCont.run(value => Future.successful(new ResultContainer(value))).map {
+    case r: ResultContainer => ActionCont[A](k => k(r.value))
+    case r                  => ActionCont.result[A](Future.successful(r))
+  }.recover(pf)).flatten
+}</code></pre>
+<p><code>run</code>は実行した場合は結果の型であるPlayの<code>Result</code>しか返すことができない。しかし、このようにまず<code>Result</code>型のサブタイプ<code>ResultContainer</code>を作っておき、それに継続を入れて、最後に<code>map</code>で値を取り出している。しかし、例えば<code>ActionCont.result</code>など継続を途中で破棄するような操作が行われている場合、我々が作った<code>ResultContainer</code>が返ってこない場合がある。そこでパターンマッチを用いて、継続が途中で破棄されるような場合はそのまま<code>ActionCont.result</code>で継続を破棄する。 以前の実装では実行して得られる値が<code>Future[Result]</code>という、<code>ActionCont.fakeRun</code>で適当に入力した使い物にならない値であったが、今回は<code>Future[A]</code>という入力されたActionContが次のActionContに渡すべき値（主作用）が手に入る。入力されたActionContはこの時点で既に実行された後なので、もう一度実行はせず、さきほど得られた値を次に渡すような最小のActionContを生成して返すことにする。 このようにすることで、もし入力されたActionContの中に副作用があったとしても、一度しか実行されないので問題とならないだろう。</p>
+<h1>まとめ</h1>
+<p>このように、副作用を持つようなActionContに対しても安全にリカバーできるようになった。この記事を読んで、より良い実装を思いついた方は気軽にコメントして欲しい。</p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>この例ではActionContの実装に<a href="https://github.com/scalaz/scalaz">Scalaz</a>の<code>IndexedContT</code>を使っているが、本質的な違いはない。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

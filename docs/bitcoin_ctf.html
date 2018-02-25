@@ -1,0 +1,141 @@
+<h1>はじめに</h1>
+<p>Capture The Flag（CTF）とはセキュリティ系のコンテンストであり、いくつかの形式があるものの、ここではjeopardy形式と呼ばれるものについて説明する。jeopardy形式のCTFは暗号やバイナリ解析、フォレンジックといったジャンルごとに脆弱性を攻撃するなどして<code>FLAG{This_is_a_flag_word}</code>のような<strong>フラッグワード</strong>と呼ばれる文字列を得て、それを運営のサーバーへ送信して正しいかどうかを判定し、正しい場合にポイントが得られるという競技である。問題は一般的に5問から10問程度出題され、時間内により多くのポイントを獲得したチームが勝利となる。世界的に有名なCTFでは上位チームに賞金が与えられ、たとえば<a href="http://ctf.codeblue.jp/">CODE BLUE CTF 2017</a>では1位のチームに賞金として30万円が送られたり、また<a href="https://capturetheflag.withgoogle.com/">Google CTF 2017</a>では1位のチームに賞金として$13,337が送られたりなどがある<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>。また、問題に対応するフラッグワードを運営に提出するための<strong>スコアサーバー</strong>と呼ばれるシステムがあり、これは他にも現在の問題の解答状況や順位を表示する機能があることが多い。 この記事ではBitcoinを利用した、著者の知る限りで新しいCTFの方法について述べる。</p>
+<p>記事を読んで分からないことや質問、改善すべきところがある場合は気軽にコメントで教えてほしい。</p>
+<h2>発表資料</h2>
+<p>この記事の内容について発表した際の資料を次のURLから入手できる。</p>
+<ul>
+<li><a href="https://y-yu.github.io/bitcoin-ctf-slide/bitcoin_ctf.pdf">アニメーションありPDF</a></li>
+<li><a href="https://y-yu.github.io/bitcoin-ctf-slide/bitcoin_ctf_without_animation.pdf">アニメーションなしPDF</a></li>
+</ul>
+<p>なお、この発表資料は下記のGitHubリポジトリでソースコードを公開している。</p>
+<ul>
+<li><a href="https://github.com/y-yu/bitcoin-ctf-slide" class="uri">https://github.com/y-yu/bitcoin-ctf-slide</a></li>
+</ul>
+<h1>Bitcoinを利用したCTFシステムの特徴</h1>
+<p>システムの詳細を述べる前に、提案するシステムの特徴を述べる。</p>
+<ul>
+<li>正しいフラッグワードを提出した場合、参加者は直ちにその問題に対応する賞金が得られる
+<ul>
+<li>よって、従来のCTFではポイントの多い順に賞金決まるが、提案する方法では賞金が多い順に順位が決まる</li>
+</ul></li>
+<li>賞金は全てBitcoinで支払われる</li>
+<li>問題を最初に解答したチーム以外には賞金が支払われない
+<ul>
+<li>jeopardy形式のCTFは一般的に、問題に解答すれば解答した順番に関わらず一定のポイントを貰えるが、提案する方法では最初に解答すること以外に意味がない</li>
+</ul></li>
+<li>Bitcoinの性質により、問題を問いたチームに賞金が支払われることが明らかである</li>
+</ul>
+<h1>Bitcoinを利用したCTFシステム</h1>
+<p>提案するCTFの詳細について述べる。</p>
+<h2>CTF開始前の作業</h2>
+<ol>
+<li>参加チーム$T_i$は運営に次を提出する（ただし$i$は$i$番目に参加登録をしたチームであることを示す$1$からはじまる連番のIDである）</li>
+</ol>
+<ul>
+<li>チーム$T_i$のBitcoinの公開鍵$\mathcal{T}_i$</li>
+</ul>
+<ol>
+<li>運営は参加登録をCTFの当日より前に締め切る</li>
+<li>問題$j$に対応するフラッグワードを$F_j$として、またこの問題を解答した際に得られる賞金を$B_j$ BTCとする。運営は次のような<code>scriptPubKey</code>を持つ$B_j$ BTCのトランザクション$\mathrm{Tx}_j$を作成する（ただし$j$は$j$番目の問題を示す問題番号である）</li>
+</ol>
+<ul>
+<li><p>$ans_{ij} := H\left(H(F_j \mid\mid i)\right)$であり、関数$H$はハッシュ関数<a href="https://ja.wikipedia.org/wiki/SHA-2">SHA256</a>である<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a></p>
+\[
+\begin{array}{l}
+\texttt{OP_DUP} \\
+1 \\
+\texttt{OP_EQUAL} \\
+\texttt{OP_IF} \\
+ \;\;\; \texttt{OP_DROP} \\
+ \;\;\; \texttt{OP_SHA256} \\
+ \;\;\; ans_{1j} \\
+ \;\;\; \texttt{OP_EQUALVERIFY} \\
+ \;\;\; \mathcal{T_1} \\
+\texttt{OP_ELSE} \\
+ \;\;\; \texttt{OP_DUP} \\
+ \;\;\; 2 \\
+ \;\;\; \texttt{OP_EQUAL} \\
+ \;\;\; \texttt{OP_IF} \\
+\;\;\; \;\;\; \texttt{OP_DROP} \\
+\;\;\; \;\;\; \texttt{OP_SHA256} \\
+\;\;\; \;\;\; ans_{2j} \\
+\;\;\; \;\;\; \texttt{OP_EQUALVERIFY} \\
+\;\;\; \;\;\; \mathcal{T_2} \\
+ \;\;\; \texttt{OP_ELSE} \\
+\;\;\; \;\;\; \texttt{OP_DUP} \\
+\;\;\; \;\;\; 3 \\
+\;\;\; \;\;\; \vdots \\
+ \;\;\;\texttt{OP_ENDIF} \\
+\texttt{OP_ENDIF} \\
+\texttt{OP_CHECKSIG}
+\end{array}
+\]</li>
+</ul>
+<ol>
+<li>トランザクション$\mathrm{Tx}_j$を全てBitcoinのブロックチェーンへ送信する</li>
+</ol>
+<ul>
+<li>ただし、トランザクションをブロックチェーンへ送信する時間はあらかじめ全参加チームに告知しておく必要がある</li>
+</ul>
+<ol>
+<li>トランザクション$\mathrm{Tx}_j$のトランザクションIDをCTFの問題ページに記載する</li>
+</ol>
+<h2>CTF開始中の作業</h2>
+<p>ここではCTFを開始した後に、チーム$T_i$が問題$j$のフラッグワード$F_j$を得た場合について考える。</p>
+<ol>
+<li>チーム$T_i$はトランザクション$\mathrm{Tx}_{j}$を入力に持ち、次のような<code>scriptSig</code>を持つトランザクション$\mathrm{Tx}_{ij}$を作成する</li>
+</ol>
+<ul>
+<li><p>ただし$h_{ij} := H(F_j \mid\mid i)$であり、$S_i$はチーム$T_i$の公開鍵$\mathcal{T}_i$に対応する秘密鍵によって作成された署名である</p>
+\[
+\begin{array}{l}
+S_i \\
+h_{ij} \\
+i
+\end{array}
+\]</li>
+</ul>
+<ol>
+<li>チーム$T_i$はトランザクション$\mathrm{Tx}_{ij}$をBitcoinのブロックチェーンへ送信する</li>
+<li>もし問題$j$がまだ解かれていないかつフラッグワードが正しい場合、チーム$T_i$は$B_j$ BTCを獲得する</li>
+</ol>
+<h2>CTF終了後の作業</h2>
+<ol>
+<li>運営はBitcoinのブロックチェーンをダウンロードする</li>
+<li>チームに対応するBitcoinの公開鍵を用いて問題を解答することで獲得したBitcoinの量を計測する</li>
+<li>Bitcoinを獲得した量で順位付けを行う</li>
+</ol>
+<h1>FAQ</h1>
+<h2>なぜフラッグワードを直接ブロックチェーンに提出しないのか？</h2>
+<p>このプロトコルでは$ans_{ij} := H\left(H(F_j \mid\mid i)\right)$と比較する方法でフラッグワードの検証を行っているが、ブロックチェーンに直接フラッグワードを提出すればよりシンプルになると思われるかもしれない。ところが、Bitcoinのブロックチェーンに送信されたトランザクションはブロックに入るまでに時間がかかるため、他の参加者が未処理トランザクションのキューを監視してフラッグワードをコピーするような攻撃が可能になる。それを防ぐためにこのような方法を採用した。</p>
+<h2>参加者はBitcoinが必要ではないか？</h2>
+<p>参加者はトランザクションを送信するための手数料が必要になる。</p>
+<h2>解かれなかった問題の賞金を回収できるのか？</h2>
+<p>$\texttt{OP_IF}$を追加して、運営の公開鍵であればCTF終了後に賞金を取り出せる、という処理を入れることができる。ただし、運営がCTF中にBitcoinを取り消すことができないように$\texttt{OP_CHECKLOCKTIMEVERIFY}$を利用するため、通常の時間でぴったり開始・終了することができないと考えられる。このため提案手法を用いたCTFは、開始時刻をBitcoinのブロックチェーンの長さが$n$に達した時とし、終了時刻をブロックチェーンの長さが$n + m \; (m &gt; 0)$に達した時としておくとよいだろう。</p>
+<h2>問題が解かれたといつ判定するのか？</h2>
+<p>著者の考えでは、フラッグワードのハッシュ値が入ったトランザクションを含むブロックから3ブロック伸びた時点で確定としてよいと思われる。Bitcoinのブロックチェーンは約10分で1ブロック作られるので、完全に確定するまで30分かかるということになる。ただ、場合によってはブロックに入った時点で確定させるということもできる。</p>
+<h2>参加者はBitcoinのブロックチェーンを監視する必要がある？</h2>
+<p>参加者は、問題$j$と対応するトランザクション$\mathrm{Tx}_j$がまだ誰の手にも渡っていないことを確認しつづける必要がある。よって、参加者はBitcoinのブロックチェーンを監視しなければならない。</p>
+<h2>なぜ問題に対応するトランザクションをブロックチェーンへ送信する時間を公開する必要があるのか？</h2>
+<p>提案するCTFのシステムは、あるハッシュ値の原像<a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a>を知っていれば得点できるものである。つまり、ハッシュ値の原像を総当たりで探索することで問題を解かなくとも得点できてしまう。原像の総当たり的な探索を規制することはできないので、全ての参加者が公平に不正ができるように公開する時間を明らかにする必要がある。一方でこのプロトコルではハッシュ関数にSHA256を利用するため、総当たりで原像を求めることは極めて困難であると考えられる。従って、このことはそれほど重要に考える必要はないだろう。</p>
+<h2>この方法は直ちに実行できるのか？</h2>
+<p>現在のBitcoinでは、提案する方法に用いられるような<code>scriptPubKey</code>や<code>scriptSig</code>を持つようなトランザクションを非標準としており、リファレンス実装においてはBitcoinのネットワークへ拡散したりマイニングを実行しない。従って、可能ではあるものの、現実的にはマイナーの多くがリファレンス実装に従っているであろうから、現時点ではこの方法は難しいと思われる。ただ手数料を多めに払った場合、マイナーはリファレンス実装を無視する可能性がある。また、Bitcoinではなく<a href="https://www.ethereum.org/">Ethereum</a>といったより汎用的なブロックチェーンを利用することで、実現できると思われる。</p>
+<h3>追記（2018/1/3）</h3>
+<p>@lotz さんがEthereumのスクリプトであるSolidityで実装してくださいましたので、そちらも参考になると思われます。</p>
+<ul>
+<li><a href="http://lotz84.hatenablog.com/entry/2018/01/02/134056">Solidityで作るCapture The Flag</a></li>
+</ul>
+<h1>まとめ</h1>
+<p>このように、Bitcoinのシステムを利用したCTFのシステムを作成した。もし著者がCTFを運営することになったらこの方法でやってみたい。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="https://en.bitcoin.it/wiki/Script">Script (Bitcoin Wiki)</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>Google CTF 2017では2位、3位のチームにも賞金が送られている。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>“$\mid\mid$”はデータの連結を示す。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p>ハッシュ値の原像とは、ハッシュ値$H(x)$に対する$x$のことである。<a href="#fnref3" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

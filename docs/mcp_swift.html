@@ -1,0 +1,142 @@
+<h1>はじめに</h1>
+<p>Minimal Cake Pattern<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>とは、株式会社ドワンゴの一部で採用されているDI（Dependency Injection）の手法である。このMinimal Cake Patternは主にScalaで行われている手法であるが、この記事ではこの手法をSwiftに移植することを目指す。 この記事で紹介したソースコードは次のリポジトリに置かれている。</p>
+<p><a href="https://github.com/y-yu/MinimalCakePatternInSwift" class="uri">https://github.com/y-yu/MinimalCakePatternInSwift</a></p>
+<p>もしこの記事を読んで、疑問や改善するべき点を見つけた場合は、気軽にコメントなどで指摘して欲しい。</p>
+<h1>Minimal Cake Patternとは？</h1>
+<p>こちらの記事に詳細な解説があるので、まずはこちらを読んでいただきたいが、DIについての知識がある場合は飛ばしてもよい。</p>
+<p><a href="http://qiita.com/pab_tech/items/1c0bdbc8a61949891f1f">Scalaにおける最適なDependency Injectionの方法を考察する 〜なぜドワンゴアカウントシステムの生産性は高いのか〜</a></p>
+<h1>SwiftによるMinimal Cake Pattern</h1>
+<p>例として「ファイルを読み込んで、その内容と読み込んだ時刻を合せて返すサービス」の作成を例に説明していく。また、もしファイルの読み込みに失敗した場合は、適切なログを出す必要があるものとする。</p>
+<h2>時刻を返す</h2>
+<p>現在の時刻を単純に取得してしまうと、その部分のテストを作る時に、テストを実行する時間によっては成功したり失敗したりする不味いテストになる可能性がある。そこで、時間を取得するインターフェースを作り、DIができるようにする。</p>
+<pre><code class="swift">protocol Clock {
+    func now() -> NSDate
+}</code></pre>
+<p>このインターフェースは<code>now</code>というメソッドを持ち、このメソッドが時間を返すものとなっている。これを用いて、現在の時刻を返す実装と、テスト用の実装を次のようにそれぞれ定義する。</p>
+<pre><code class="swift">class MixInSystemClock: Clock {
+    func now() -> NSDate {
+        return NSDate()
+    }
+}
+
+class MixInMockClock: Clock {
+    let date: NSDate
+    
+    init(_ str: String) {
+        let inputFormatter = NSDateFormatter()
+        inputFormatter.dateFormat = "yyyy-MM-dd"
+        date = inputFormatter.dateFromString(str)!
+    }
+    
+    func now() -> NSDate {
+        return date
+    }
+}</code></pre>
+<p><code>SystemClock</code>は現在の時刻を返すようになっているが、<code>MockClock</code>は引数で時刻を受け取り、<code>now</code>メソッドは必ずそれを返すようになっている。 次に、この<code>Clock</code>を用いることを示すインターフェースを次のように定義する。</p>
+<pre><code class="swift">protocol UsesClock {
+    var clock: Clock { get }
+}</code></pre>
+<h2>ログを出力する</h2>
+<p>ログは、ファイルに出力するべき時もある一方で、テストの際はファイルIOの失敗によりテストが失敗することを防ぐために、ロガーが呼ばれたことだけをチェックし、ログは標準出力に出せば十分であることがある。このように、いろいろな実装が考えられることから、ロガーについてもDIできた方がよい。<code>Clock</code>と同様に、まずはロガーのインターフェースを次のように定義する。</p>
+<pre><code class="swift">protocol Logger {
+    func info(m: String) -> Void
+    
+    func error(m: String) -> Void
+}</code></pre>
+<p>そして、今回は標準出力にログを出力する実装だけを用意する。</p>
+<pre><code class="swift">class MixInPrintLogger: Logger {
+    func info(m: String) -> Void {
+        print("Info: " + m)
+    }
+    
+    func error(m: String) -> Void {
+        print("Error: " + m)
+    }
+}</code></pre>
+<p>最後に、このロガーを使うことを表すインターフェースを定義する。</p>
+<pre><code class="swift">protocol UsesLogger {
+    var logger: Logger { get }
+}</code></pre>
+<h2>ファイルを読み込むサービス</h2>
+<p>さて、時刻を取得する部分とログを出す部分が完成したので、次はファイルを読み込むサービスを作る。まず、このサービスはファイルを読み込んで、内容と時刻を返すメソッド<code>readWithDate</code>を持つことを示すインターフェースを定義する<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>。</p>
+<pre><code class="swift">protocol ReadFileService: UsesClock, UsesLogger {
+    func readWithDate(fileName: String) -> Optional<(NSDate, String)>
+}</code></pre>
+<p>このインターフェースは<code>UsesClock</code>と<code>UsesLogger</code>を実装しなければならないので、このインターフェースの実装にもしDIが行われていなければコンパイルに失敗することになる。Minimal Cake Patternのような静的なDIは、このようにDIに失敗したことをコンパイルタイムに教えてくれるというメリットがある。そして、<code>readWithDate</code>メソッドの内容を次のように与える。</p>
+<pre><code class="swift">extension ReadFileService {
+    func readWithDate(fileName: String) -> Optional<(NSDate, String)> {
+        if let dir : NSString = NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory.DocumentDirectory, NSSearchPathDomainMask.AllDomainsMask, true).first {
+            
+            let pathFileName = dir.stringByAppendingPathComponent(fileName)
+            logger.info(pathFileName)
+            
+            do {
+                let text = try NSString(contentsOfFile: pathFileName, encoding: NSUTF8StringEncoding)
+                return (clock.now(), text as String)
+            } catch {
+                logger.error("fail to read the file!")
+                return Optional.None
+            }
+        } else {
+            logger.error("fail to search directory to read the file!")
+            return Optional.None
+        }
+    }
+}</code></pre>
+<p>このメソッドの中では、<code>UsesClock</code>と<code>UsesLogger</code>により、時刻の取得とログの出力が抽象的に行える。さて、これに具体的な実装をDIすると、次のようになる。</p>
+<pre><code class="swift">class MixInReadFileService: ReadFileService {
+    var clock: Clock = MixInSystemClock()
+    var logger: Logger = MixInPrintLogger()
+}
+
+class MixInReadFileServiceTest: ReadFileService {
+    var clock: Clock = MixInMockClock("2016-06-18")
+    var logger: Logger = MixInPrintLogger()
+}</code></pre>
+<p>このように、デフォルトの実装である<code>MixInReadFileService</code>では現在の時刻を返す<code>MixInSystemClock</code>がDIされている。一方で、テストで使う<code>MixInReadFileServiceTest</code>は<code>MixInMockClock</code>で常に現在時刻が2016年6月18日となるようにしている。これで、テストが時間によって成功したり失敗したりするという事態を回避することができる。</p>
+<h2><code>ReadFileService</code>を使う<code>MainService</code></h2>
+<p>さて、<code>ReadFileService</code>を使って<code>test.txt</code>の中身を表示<code>MainService</code>を考える。次のように、まずはインターフェースを定義する。</p>
+<pre><code class="swift">protocol MainService: UsesReadFileService {
+    func main() -> Void
+}</code></pre>
+<p>そして、メソッドの内容を与える。</p>
+<pre><code class="swift">extension MainService {
+    func main() -> Void {
+        let opt = readFileService.readWithDate("test.txt")
+        _ = opt.map({(f: (NSDate, String)) -> Void in
+            print(f.0)
+            print(f.1)
+        })
+    }
+}</code></pre>
+<p>そして、具体的な実装をDIして終了である。</p>
+<pre><code class="swift">class MixInMainService: MainService {
+    var readFileService: ReadFileService = MixInReadFileService()
+}</code></pre>
+<h2><code>MainService</code>を使う</h2>
+<p><code>MainService</code>の実装である<code>MixInMainService</code>を次のように使う。</p>
+<pre><code class="swift">MixInMainService().main()</code></pre>
+<p>もし<code>test.txt</code>が存在する場合は、次のような出力が得られる。</p>
+<pre><code>Info: /Users/hikaru_yoshimura/Documents/test.txt
+2016-06-18 10:24:20 +0000
+foobar
+hogehoge</code></pre>
+<p>存在しない場合、次のようにエラーログが出力される。</p>
+<pre><code>Info: /Users/hikaru_yoshimura/Documents/test.txt
+Error: fail to read the file!</code></pre>
+<h1>まとめ</h1>
+<p>このように、Minimal Cake PatternをSwiftでも用いることができた。DIについて、Swift界隈でも議論が起きればよいと思う。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="http://qiita.com/pab_tech/items/1c0bdbc8a61949891f1f">Scalaにおける最適なDependency Injectionの方法を考察する 〜なぜドワンゴアカウントシステムの生産性は高いのか〜</a></li>
+<li><a href="http://qiita.com/tayama0324/items/6ff7cb937a4283789ed8">Mix-in injection における最強のテスト用インスタンス構築パターン</a></li>
+<li><a href="http://qiita.com/tayama0324/items/7f87ee3672b15dd68016">Minimal Cake Pattern のお作法</a></li>
+<li><a href="http://qiita.com/gomi_ningen/items/3b977fbc83bcac2fc6f2">Swift2で静的なDIを実現する謎のソースコード</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>この手法は、“mix-in injection”とも呼ばれているが、この記事ではMinimal Cake Patternを用いることにする。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>このメソッドは、もしファイルの読み込みに失敗したら<code>None</code>を返す。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

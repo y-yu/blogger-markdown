@@ -1,0 +1,161 @@
+<p>色々な型の値をまとめて扱う際には<strong>タプル</strong>を用いるが、Scalaのタプルは22個までしか値を入れることができない。もし23個の値を持つタプルが必要な場合は自力でそういうデータ型を作るしかない。しかし、例えば23個のタプルを作ったとしても、次に24個のタプルが欲しくなったらまた作る必要があり、これは大変なことになる。そこで、今回はこの問題を解決するために<strong>Heterogeneous List</strong>（<strong>HList</strong>）を実装することにする。 タプルの話題をしているのに、何故リストが出てくるのかと疑問に思うかもしれない。一般にリストとはある型の要素がいくつか入っているデータ構造であるが、HListは色々な型の要素を投入することができ、かつ値がいくつ入っているのかを管理しているデータ構造である。このようなHListはもはやタプルと同じように扱うことができる。</p>
+<h1>アイディア</h1>
+<p>まず普通のリストについて考える。普通のリストは次のようなデータ型である。</p>
+<pre><code class="scala">sealed trait List[A]
+case class Cons[A](h: A, t: List[A]) extends List[A]
+case object Nil extends List[Nothing]</code></pre>
+<p>これに対して、HListは次のようになる。</p>
+<pre><code class="scala">sealed trait HList
+case class HCons[+A, +B <: HList](h: A, t: B) extends HList
+sealed trait HNil extends HList</code></pre>
+<p>注目して欲しいのは、<code>HCons</code>の<code>t</code>が<code>HList</code>ではない点である。ではここに何が入るのかと言うと、例えば<code>HNil</code>や<code>HCons[Int, HNil]</code>、他にも<code>HCons[Int, HCons[String, HNil]]</code>といった、型のリストを入れることができる。この仕組みを用いて、色々な型の値を入れられるが型安全であるという目標を実現する。</p>
+<h1><code>HList</code>の定義</h1>
+<p>まず、HListをデータ型で次のように定義する。</p>
+<pre><code class="scala">package hlist
+
+sealed trait HList
+case class :*:[+A, +B <: HList](h: A, t: B) extends HList {
+  def :*:[C](x: C): C :*: A :*: B = hlist.:*:(x, this)
+}
+sealed trait HNil extends HList {
+  def :*:[A](x: A): A :*: HNil = hlist.:*:(x, this)
+}</code></pre>
+<p>先ほどの例ではコンストラクタに<code>HCons</code>を用いていたが、例えば<code>HCons(a, HCons(b, hnil))</code><a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>と書くのはやや大変なので、コンストラクタを<code>:*:</code>という記号にしてしまって、かつそのメソッドにも<code>:*:</code>を加えることで、<code>a :*: b :*: hnil</code>という記法が利用できるようになる。 まず、コンストラクタ<code>:*:</code>が持つ<code>:*:</code>メソッドについて説明する。</p>
+<pre><code class="scala">def :*:[C](x: C): C :*: A :*: B = hlist.:*:(x, this)</code></pre>
+<p>ここで<code>this</code>は<code>A :*: B</code>という型である。それに対して新たに型<code>C</code>の値<code>x</code>を用いてコンストラクタを呼び出すので、生成される型は<code>C :*: A :*: B</code>となる。 <code>HNil</code>に関しては次のようになる。</p>
+<pre><code class="scala">def :*:[A, B <: HList](x: A): A :*: HNil = hlist.:*:(x, this)</code></pre>
+<p><code>this</code>が<code>HNil</code>なので、生成される型は<code>A :*: HNil</code>となる。</p>
+<h1><code>hnil</code></h1>
+<p>空のHListを表す<code>hnil</code>を次のよう定義する。</p>
+<pre><code class="scala">val hnil = new HNil {}</code></pre>
+<h1><code>head</code>と<code>tail</code></h1>
+<p>HListを操作するメソッド<code>head</code>と<code>tail</code>を定義する。<code>head</code>はHListの先頭の要素を得るメソッドであり、<code>tail</code>はHListの先頭以外のHListを得るメソッドである。</p>
+<pre><code class="scala">def head[A, B <: HList](l: A :*: B): A = l match {
+  case h :*: _ => h
+}
+
+def tail[A, B <: HList](l: A :*: B): B = l match {
+  case _ :*: t => t
+}</code></pre>
+<p>まず<code>head</code>は<code>A :*: B</code>型のHListを受け取り、先頭の型<code>A</code>を返すので、返り値の型は<code>A</code>となる。<code>tail</code>は<code>A :*: B</code>型のHListを受け取り<code>B</code>型のリストを返す。 この<code>head</code>と<code>tail</code>が正しくできているのか確認してみる。</p>
+<pre><code class="scala">val l = 1 :*: "string" :*: 1.0 :*: hnil
+head(l) + 1
+tail(tail(tail(tail(l)))) // compile error!</code></pre>
+<p>まず、HList<code>l</code>に<code>Int</code>や<code>String</code>など色々な型の値を入れることに成功しているのが分かる。そして<code>head</code>で先頭の要素を取り出すこともできる。最後の例が何故コンパイルエラーになるのかと言うと、まず<code>l</code>の型は<code>Int :*: String :*: Double :*: HNil</code>となっている。この<code>l</code>に対して<code>tail</code>を3回用いると<code>HNil</code>となってしまい、<code>tail</code>が求める型<code>A :*: B</code>を満すことができない。ゆえに4回目の<code>tail</code>はコンパイルエラーとなる。 このように、HListは今どんな型がどれだけ入っているのかを管理しているので、空のHList（<code>hnil</code>）に対する<code>head</code>や<code>tail</code>をコンパイル時に検出することができる。</p>
+<h1><code>append</code></h1>
+<p>二つのHListを結合するメソッド<code>append</code>を実装したいものの、これは先ほど実装した<code>head</code>や<code>tail</code>のようには型を定義することができない。なのでややトリッキーなことを行う必要がある。 まず、普通のリストに対して用いる<code>append</code>メソッドは次のようになる。</p>
+<pre><code class="scala">def append[A](l1: List[A], l2: List[A]): List[A] = l1 match {
+  case Nil     => l2
+  case x :: xs => x :: append(xs, l2)
+}</code></pre>
+<p>これをHListに対して行うには、どのようにすればよいだろうか。</p>
+<h2>実装の方針</h2>
+<p>例えば二つのHListを<code>l1: A</code>と<code>l2: B</code>であるとして、<code>append</code>の型はどのようになるのだろうか。ここでは<code>append</code>の第一引数の型で場合分けして考えてみる。</p>
+<h3>第一引数のHListが型<code>HNil</code>の場合</h3>
+<p>つまり、第一引数のHListが型<code>HNil</code>であり、第二引数のHListが型<code>A</code>であるならば、この二つを<code>append</code>した結果は次のようになる。</p>
+<pre><code class="scala">def append[A <: HList](l1: HNil, l2: A): A</code></pre>
+<p>これは特に説明の必要はないと思う。</p>
+<h3>第一引数のHListが型<code>A</code>の場合に成り立つと仮定して、第一引数のHListの型が<code>X :*: A</code>の場合を考える</h3>
+<p>ここでは、数学的帰納法などでありがちな考え方を導入する。第一引数のHListの型が<code>A</code>であり、第二引数のHListの型が<code>B</code>である時に、<code>append</code>の型が<code>C</code>となるということを仮定する。</p>
+<pre><code class="scala">def append[A <: HList, B <: HList, C <: HList](l1: A, l2: B): C</code></pre>
+<p>そして、次に一番目のHListに型<code>X</code>の値を一つ足したHListである<code>X :*: A</code>について、次のような型を付けることができる。</p>
+<pre><code class="scala">def append[A <: HList, B <: HList, C <: HList, X](l1: X :*: A, l2: B): X :*: C</code></pre>
+<p>さて、これをどのようにScalaのコードへエンコードすればよいのだろうか。</p>
+<h2>型クラスとアドホック多相</h2>
+<p>このような型付けを行う際には、<strong>型クラス</strong>という機能を用いる。<a href="http://chopl.in/blog/2012/11/06/introduction-to-typeclass-with-scala.html">こちらのサイト</a>では型クラスを用いることで実現できる<strong>アドホック多相</strong>について、次のように書かれている。</p>
+<blockquote>
+<p>アドホック多相とは何かというと</p>
+<ul>
+<li>異なる型の間で共通したインターフェースでの異なる振る舞いを</li>
+<li>定義済みの型に対して拡張する</li>
+</ul>
+<p>ような多相のことです。</p>
+</blockquote>
+<p>つまり今回のケースでは、同じ<code>append</code>メソッドであるものの、第一引数の型によって、次の二つのメソッドへ振り分ける必要がある。</p>
+<ul>
+<li><code>append1: (A, HNil) =&gt; A</code></li>
+<li><code>append2: (A, B) =&gt; C</code>を前提として、<code>append3: (X :*: A, B) =&gt; X :*: C</code></li>
+</ul>
+<p>従って、型クラスを用いてアドホック多相を実現することにする。</p>
+<h2>実装</h2>
+<p>まず、<code>append</code>メソッドの型情報を定義する<code>HAppend</code>トレイトを作成する。</p>
+<pre><code class="scala">trait HAppend[A <: HList, B <: HList, C <: HList] {
+  def append(l1: A, l2: B): C
+}</code></pre>
+<p>この<code>HAppend</code>トレイトは、二つのHList（それぞれ型が<code>A</code>と<code>B</code>）を取り、返り値の型が<code>C</code>である<code>append</code>メソッドの型情報を定義する。 そして、先ほどの二つの<code>append</code>をそれぞれ<code>appendHNil</code>と<code>appendHList</code>という名前で次のように実装する。</p>
+<pre><code class="scala">implicit def appendHNil[A <: HList] = new HAppend[HNil, A, A] {
+  def append(l1: HNil, l2: A): A = l2
+}
+
+implicit def appendHList[A <: HList, B <: HList, C <: HList, X](implicit i: HAppend[A, B, C]) =
+  new HAppend[X :*: A, B, X :*: C] {
+    def append(l1: X :*: A, l2: B): X :*: C =
+      cons(head(l1), i.append(tail(l1), l2))
+  }</code></pre>
+<p>まず、<code>appendHNil</code>の実装について考える。第一引数<code>l2</code>の型が<code>HNil</code>であるので、<code>appnend</code>の結果としては<code>l2</code>の値をそのまま返せばよく、従って型も<code>l2</code>の型と同じく<code>A</code>となる。 <code>appendHList</code>については、まず<code>HAppend[A, B, C]</code>を満すようなインスタンス<code>i</code>が存在することを仮定する。</p>
+<pre><code class="scala">(implicit i: HAppend[A, B, C])</code></pre>
+<p>そして、普通のリストの場合と同じように、<code>append</code>メソッドを定義する。</p>
+<pre><code class="scala">def append(l1: X :*: A, l2: B): X :*: C =
+  cons(head(l1), i.append(tail(l1), l2))</code></pre>
+<p>少々異なる点は再帰的に用いる<code>append</code>メソッドがインスタンス<code>i</code>のメソッドになっていることだ。これは、現在定義した<code>append</code>メソッドが<code>(X :*: A, B) =&gt; X :*: C</code>という型を持つのに対して、投入したい引数は<code>tail(l1): A</code>と<code>l2: B</code>である。<code>l2</code>は問題ないが、<code>tail(l1)</code>は型<code>A</code>なので<code>X :*: A</code>と異なりエラーとなる。しかし、先ほど作成したインスタンス<code>i</code>は、<code>append: (A, B) =&gt; C</code>というメソッドを持っているので、これを用いて帰納的な関数に対して型を付けられるようにしている。 また、どうして<code>appendHNil</code>の定義が必要なのかと疑問に思うかもしれないが、もしここで<code>appendHNil</code>がない場合は常に<code>appendHList</code>が呼び出され続けて無限に回り続けてしまう。それを防ぐために、<code>appendHNil</code>を用意している。 後は二つの<code>appendHNil</code>と<code>appendHList</code>を振り分ける<code>append</code>を実装すればよい。</p>
+<pre><code class="scala">def append[A <: HList, B <: HList, C <: HList](l1: A, l2: B)(implicit i: HAppend[A, B, C]) =
+  i.append(l1, l2)</code></pre>
+<h1><code>nth</code></h1>
+<p>タプルやリストでは$n$番目の要素へアクセスする手段を提供している。今回のHListではどのようにそれを実装したらよいだろうか。ちなみに普通のリストに対する<code>nth</code>は次のように実装できる。</p>
+<pre><code class="scala">def nth[A](l: List[A], n: Int) = l match {
+  case x :: xs if n == 0 => x
+  case x :: xs           => nth(n - 1, xs)
+}</code></pre>
+<h2>実装の方針と問題点</h2>
+<p>そこで<code>append</code>の時と同様に場合分けして考えることにする。</p>
+<ul>
+<li>$0$番目にアクセスする場合</li>
+<li>$n$番目にアクセスできると仮定して、$n + 1$番目にアクセスする場合</li>
+</ul>
+<p>このように二つに区別すればよさそうな気がするが、実はこれには問題がある。先程の例ではHListが<code>HNil</code>または<code>A :*: HList</code>のどちらかであるという型情報を用いて分岐させていたが、今回分岐の対象として用いる数字（<code>Int</code>）は<code>0</code>であっても、その他の数であっても両方<code>Int</code>型なので、これを使って分岐させることはできない。</p>
+<h2>自然数の実装</h2>
+<p>そこで$0$とそれ以外の数字を区別するような型を定義する。自然数の型<code>Nat</code>は次のようになる。</p>
+<pre><code class="scala">sealed trait Nat
+sealed trait Zero extends Nat
+case class Succ[A <: Nat](n: A) extends Nat</code></pre>
+<p>自然数の世界には<code>Zero</code>と自然数に1を足す<code>Succ</code>が存在する。自然数を操作するためメソッドを次のように定義する。</p>
+<pre><code class="scala">object Nat {
+  val nzero = new Zero {}
+  def succ[A <: Nat](n: A): Succ[A] = Succ(n)
+  def pred[A <: Nat](n: Succ[A]): A = n match {
+    case Succ(n) => n
+  }
+}</code></pre>
+<p>例えば$3$は<code>succ(succ(succ(nzero)))</code>と表現でき、その型は<code>Succ[Succ[Succ[Zero]]]</code>となる。こうすることで自然数を型の情報へエンコードすることができる。</p>
+<h2>実装</h2>
+<p>まずは<code>append</code>の時と同様に、型クラスに用いるトレイトを定義する。</p>
+<pre><code class="scala">trait HNth[A <: HList, B <: Nat, C] {
+  def nth(l: A, n: B): C
+}</code></pre>
+<p>そして、次のように二つのメソッドを定義して分岐させる。</p>
+<pre><code class="scala">implicit def nthZero[A, B <: HList] = new HNth[A :*: B, Zero, A] {
+  def nth(l: A :*: B, n: Zero): A = head(l)
+}
+
+implicit def nthN[A <: HList, B <: Nat, C, D](implicit i: HNth[A, B, C]) = new HNth[D :*: A, Succ[B], C] {
+  def nth(l: D :*: A, n: Succ[B]): C = i.nth(tail(l), Nat.pred(n))
+}
+
+def nth[A <: HList, B <: Nat, C](l: A, n: B)(implicit i: HNth[A, B, C]) =
+  i.nth(l, n)</code></pre>
+<p>このようにすることで、<code>Zero</code>の場合と<code>Succ[Nat]</code>の場合に上手く分岐させることができる。</p>
+<h1>実装</h1>
+<p>今回作成したコードは<a href="https://gist.github.com/y-yu/2bfd682ffb216f7fe1f4">Gist</a>にアップロードしてある。</p>
+<h1>まとめ</h1>
+<p>今回作成したHListを用いれば、100個や200個の型が異なるデータを持つ型安全なリストを扱うプログラムを記述できる。また、型クラスを利用して実用的なプログラムの例を考えることができた。 なお、今回実装したHListは<a href="https://github.com/milessabin/shapeless">shapeless</a>というライブラリの中に（おそらく）より高機能なものがあるので、実用したい方はそちらを使う方がいいかもしれない。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="http://okmij.org/ftp/Haskell/HList-ext.pdf">Strongly Typed Heterogeneous Collections</a></li>
+<li><a href="http://chopl.in/blog/2012/11/06/introduction-to-typeclass-with-scala.html">Scalaで型クラス入門</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>後で説明するが、<code>hnil</code>は型<code>HNil</code>を持つ値である。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

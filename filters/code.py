@@ -8,10 +8,12 @@ def mkMathBlock(code):
     return RawBlock('html', "\\[\n" + code + "\n\\]")
 
 def mkCodeBlock(classes, code):
+    code = code.replace('<', '&lt;').replace('>', '&gt;')
     if (len(classes) == 0):
         return RawBlock('html', "<pre><code>" + code + "</code></pre>")
     else:
-        return RawBlock('html', "<pre><code class=\"" + classes[0] + "\">" + code + "</code></pre>")
+        c = (classes[0].split(':'))[0]
+        return RawBlock('html', "<pre><code class=\"" + c + "\">" + code + "</code></pre>")
  
 def filter(key, value, fmt, meta):
     if key == 'CodeBlock':

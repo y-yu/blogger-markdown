@@ -1,0 +1,70 @@
+<h1>続編</h1>
+<p>この記事で指摘した課題を解決した新しいガチャをつくりました。</p>
+<p><a href="http://qiita.com/yyu/items/fce9b33c784e0631ddf6">コミットメントを用いた公平なガチャシステム</a></p>
+<h1>はじめに</h1>
+<p><a href="http://qiita.com/yyu/items/90db09c57514758bd68c">僕が（ほとんどを）考えた公平なガチャシステム</a>を<a href="https://twitter.com/todesking">todesking</a>さんにとりあげていただいた。</p>
+<blockquote class="twitter-tweet" lang="ja"><p lang="ja" dir="ltr">安全ガチャだ <a href="https://t.co/0wQZ5WzwjT">https://t.co/0wQZ5WzwjT</a></p>&mdash; トデス子&#39;\ (@todesking) <a href="https://twitter.com/todesking/status/683547727406313472">2016, 1月 3</a></blockquote>
+<script async src="//platform.twitter.com/widgets.js" charset="utf-8"></script>
+<p>そうしたところ、<a href="https://twitter.com/bulkneets">mala</a>さんが次のようなガチャシステムを考えてくださった。</p>
+<blockquote class="twitter-tweet" lang="ja"><p lang="ja" dir="ltr"><a href="https://twitter.com/todesking">@todesking</a> ものすごく単純化した。ハッシュ云々とかイランと思う <a href="https://t.co/A2U1G8Re8a">https://t.co/A2U1G8Re8a</a></p>&mdash; mala (@bulkneets) <a href="https://twitter.com/bulkneets/status/683574254315507712">2016, 1月 3</a></blockquote>
+<script async src="//platform.twitter.com/widgets.js" charset="utf-8"></script>
+<p>これを僕も読んでみて、考えられる限り色々考えてみた結果をここにまとめる。</p>
+<h1>malaさんのガチャシステム</h1>
+<p>malaさんが考えたガチャシステムの全文は次のGistにアップロードされている。</p>
+<blockquote>
+<p><a href="https://gist.github.com/mala/f33c9654af5e06e8bca9" class="uri">https://gist.github.com/mala/f33c9654af5e06e8bca9</a></p>
+</blockquote>
+<h2>プロトコル</h2>
+<p>上記の文章を僕なりに説明すると次のようになる。</p>
+<ol>
+<li><p>運営は、$n$種類のカード$K_1 \dots K_n$に番号を割り当てる</p>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: center;">カード</th>
+<th style="text-align: center;">番号</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: center;">$K_1$</td>
+<td style="text-align: center;">$1$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$K_2$</td>
+<td style="text-align: center;">$2$</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;">$\vdots$</td>
+<td style="text-align: center;">$\vdots$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$K_n$</td>
+<td style="text-align: center;">$n$</td>
+</tr>
+</tbody>
+</table></li>
+<li>運営は割り当てた番号をシャッフルし、シャッフルした結果をユーザーへ公開する</li>
+<li>運営は<strong>キー</strong>と呼ばれる数値を用意する（ただし、キーは$n$より小さい）</li>
+<li>運営はキーを<a href="https://ja.wikipedia.org/wiki/%E5%85%B1%E9%80%9A%E9%8D%B5%E6%9A%97%E5%8F%B7">対称鍵暗号</a>で暗号化してユーザーへ送信する</li>
+<li>ユーザーは暗号化されたキーを受けとり、(2)でシャッフルされた番号の中から一枚を選択する</li>
+<li>運営はキーを暗号化する際に用いた対称鍵をユーザーに公開する</li>
+<li>ユーザーは暗号化されたキーを復号し、選択した番号にその数を足して$n$で割った剰余を求める</li>
+<li><p>ユーザーは(7)で求めた剰余に対応するカードを得る</p></li>
+</ol>
+<p>この方法で大丈夫なのかどうかについて議論を進めていく。</p>
+<h1>改良案</h1>
+<p>これを聞いて僕が考えたところ、改良点を思いついたのでそれについて説明する。</p>
+<h2>マリシャスな運営による不公平な暗号鍵の送信</h2>
+<blockquote class="twitter-tweet" lang="ja"><p lang="ja" dir="ltr"><a href="https://twitter.com/_yyu_">@_yyu_</a> <a href="https://twitter.com/todesking">@todesking</a> 暗号化データから複数の復号結果が得られうるようなアルゴリズムだとサーバー側で運営者にのみ有利な結果が選択されるような(レア度が低い) 別の鍵を作れますね。よく知られてるアルゴリズム使うだけで十分なのでは、と思ってその辺りは端折りました</p>&mdash; mala (@bulkneets) <a href="https://twitter.com/bulkneets/status/683625361653907456">2016, 1月 3</a></blockquote>
+<script async src="//platform.twitter.com/widgets.js" charset="utf-8"></script>
+<p>malaさんが仰るように、キーを暗号化する際に用いた秘密鍵と全然関係のないデータを運営はさも対称鍵であるかのように偽ってユーザーへ公表する可能性がある。こうした可能性を排除するために、<a href="https://ja.wikipedia.org/wiki/%E3%82%BC%E3%83%AD%E7%9F%A5%E8%AD%98%E8%A8%BC%E6%98%8E">ゼロ知識証明</a>を用いるなどして、<strong>暗号化の際に用いた対称鍵と公開した秘密鍵が同じであること</strong>をユーザーに対して証明する手続きが必要であると思われる。</p>
+<h1>まとめ</h1>
+<blockquote class="twitter-tweet" lang="ja"><p lang="ja" dir="ltr">確率操作されてるって騒ぐ層にも理解できるアルゴリズムであることが必要だと思う</p>&mdash; mala (@bulkneets) <a href="https://twitter.com/bulkneets/status/683580099212349440">2016, 1月 3</a></blockquote>
+<script async src="//platform.twitter.com/widgets.js" charset="utf-8"></script>
+<p>malaさんの言い方はややキツいが、僕の考えたアルゴリズムはやや複雑すぎたと思うところはある。一方でmalaさんのガチャシステムは非常に簡潔でよいと思う。また、malaさんやtodeskingさんには、公平なガチャシステムに関する議論に参加していただけたことに大変感謝している。</p>
+<h1>P.S</h1>
+<blockquote class="twitter-tweet" lang="ja"><p lang="ja" dir="ltr">ユーザが運営をまったく信頼しないことを前提とする公平性証明ガチャを導入したところで、ガチャ以外のロジックの妥当性が問題になるだけだし思いやりと信頼でやっていくほうがマシなのではという気もしてきた……</p>&mdash; トデス子&#39;\ (@todesking) <a href="https://twitter.com/todesking/status/683557660973645828">2016, 1月 3</a></blockquote>
+<script async src="//platform.twitter.com/widgets.js" charset="utf-8"></script>
+<blockquote class="twitter-tweet" lang="ja"><p lang="ja" dir="ltr">ガチャ以外にも、ソーシャルゲームのありとあらゆる確率が絡む局面を秘密計算で実装すれば、ユーザーはアプリケーションをリバースエンジニアリングして公平性を確かめることができる。</p>&mdash; 吉村 優 (@_yyu_) <a href="https://twitter.com/_yyu_/status/683664323051311104">2016, 1月 3</a></blockquote>
+<script async src="//platform.twitter.com/widgets.js" charset="utf-8"></script>

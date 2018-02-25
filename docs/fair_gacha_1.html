@@ -1,0 +1,51 @@
+<blockquote>
+<p>新しい手法を開発しました。 <a href="http://qiita.com/yyu/items/90db09c57514758bd68c">僕が（ほとんどを考えた）公平なガチャシステム</a></p>
+</blockquote>
+<h1>はじめに</h1>
+<p>ソーシャルゲームのガチャは、あらかじめ運営からSSRなどのレアリティに基づいた出現確率が公表されているが、それはあくまで運営が公表した値でしかなく、本当にその通りなのか疑う余地があった。そこでこの記事では<a href="http://qiita.com/yyu/items/c342c3c90ac78f26d5e1">前回の記事</a>で紹介したハッシュの衝突に基いて、ユーザーにとっても運営にとってもガチャによるカードの出現確率が明らかな方法を提案する。何か質問や意見などがあれば、気軽にコメントして欲しい。</p>
+<h1>プロトコル</h1>
+<p>この計算量を利用した方法はどこかのCTFで出題されたと友人から聞いて、それを使っている。</p>
+<h2>日本語による手順</h2>
+<ol>
+<li>運営はカードとそれに対応する<strong>マスク</strong>を公開する。このマスクは$n$ビットで構成されていて、カードの種類と一対一に対応している。このマスクはSSRなど希少なカードほど1のビットが多く、Nなどありがちなカードほど0が多くなるようにしておく。</li>
+<li>ユーザーがガチャを引こうとすると、アプリケーションがサーバーへそのことを通知する</li>
+<li>サーバーは、無作為な文字列<strong>A</strong>と$n$ビットのデータ<strong>B</strong>をデータベースへ書き込み、<strong>A</strong>と<strong>B</strong>をアプリケーションへ送信する</li>
+<li>アプリケーションは<strong>A</strong>に任意の文字列を追加して、文字列<strong>C</strong>を生成する</li>
+<li>アプリケーションは文字列<strong>C</strong>のハッシュ値を計算し、<strong>B</strong>とのAND（論理積）を計算し、それを<strong>D</strong>とする
+<ul>
+<li>$D = B\, \&amp;\, hash(C)$</li>
+</ul></li>
+<li>アプリケーションは<strong>D</strong>に対応する<strong>マスク</strong>を持つカードを表示し、<strong>A</strong>と<strong>B</strong>と<strong>C</strong>をサーバーへ送信する
+<ul>
+<li>もし<strong>D</strong>に対応する<strong>マスク</strong>が一つもない場合は（4）からやりなおす</li>
+</ul></li>
+<li>サーバーは次のことを検証する
+<ul>
+<li>サーバー側のデータベースに<strong>A</strong>と<strong>B</strong>が記録されているか</li>
+<li>文字列<strong>C</strong>の中に<strong>A</strong>が含まれているか</li>
+</ul></li>
+<li>サーバーは<strong>C</strong>からアプリケーションと同じように<strong>D</strong>を計算する
+<ul>
+<li>$D = B\, \&amp;\, hash(C)$</li>
+</ul></li>
+<li>サーバーは<strong>D</strong>と同じ<strong>マスク</strong>を持つカードをユーザーに与える
+<ul>
+<li>もし<strong>D</strong>に対応する<strong>マスク</strong>が一つもない場合はエラーを返す</li>
+</ul></li>
+<li>データベースから<strong>A</strong>と<strong>B</strong>を削除</li>
+</ol>
+<h2>シーケンス図</h2>
+<p><a href="https://gist.github.com/yoshimuraYuu/95b4d8134e283ddeb920" class="uri">https://gist.github.com/yoshimuraYuu/95b4d8134e283ddeb920</a> <img src="https://qiita-image-store.s3.amazonaws.com/0/10815/ec9bb04b-495a-36f2-27a2-09f4e32b76e3.png" alt="diagram-4885526936437794416.png" /></p>
+<h1>レアリティの操作</h1>
+<p>ソーシャルゲームの多くはレアリティがSSRだと1%、Nだと50%などと決められている。このような確率を表現する手段として、<strong>マスク</strong>の立っているビットの量を使う。例えば<strong>マスク</strong>で立っているビット数が1つであれば、ユーザーにとって<strong>C</strong>を求めるのが容易になるし、一方で$n$に近い数であれば<strong>C</strong>を求めるのは困難になる。このように、ハッシュ値を計算する試行回数を利用して、レアリティを操作することができる。</p>
+<h1>公平性</h1>
+<p>これのポイントは、ガチャを<strong>サーバーが生成した（と思われる）乱数</strong>から<strong>ハッシュ値の衝突確率</strong>という問題に切り替えたことだと思う。こうすることで、不透明なサーバー内でのガチャ処理を行わずに、透明なハッシュ値によるガチャを行うことができる。ユーザーは、サーバーにデータを送る前に自分が引いたガチャの結果を知ることができるし、もしサーバーで検証して自分で確かめた結果と異なる場合は、どちらが悪いのか確かめることができる。 また、これは計算の直前に<strong>A</strong>を与えている。これがソルトのような役割を果すので、あらかじめ大量に計算するのは無駄と思われる。</p>
+<h1>課金</h1>
+<p>ユーザーが課金した場合、多くのゲームは無課金のガチャに比べてレアカードの出現率が高くなる。このような処理は、ユーザーのIDに課金情報を持っておいて、課金状態やガチャの種類によって<strong>マスク</strong>の一覧を変えればいい。ただし、これら<strong>マスク</strong>は全てユーザーに公開されている必要がある。</p>
+<h1>データ<strong>C</strong>の販売</h1>
+<p>業者などが介入した場合、業者は<strong>A</strong>と<strong>B</strong>を入手した後、ハッシュ値を求めるための高性能なコンピューターやハードウェアを用いて、高速に<strong>C</strong>を計算し、それをオークションなどで売りさばく可能性がある。これを防ぐためには次の手順を実行すればよい。</p>
+<ol>
+<li><strong>A</strong>と<strong>B</strong>をサーバーが発行する際に、データベースへユーザー情報を保存する</li>
+<li>アプリケーションが<strong>C</strong>を送る際、ユーザー情報をともに送信する</li>
+<li>サーバーはデータベースからユーザー情報を取得し、それと送信されたユーザー情報を検証する</li>
+</ol>

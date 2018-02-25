@@ -1,0 +1,106 @@
+<h1>はじめに</h1>
+<p><a href="http://www.iwsec.org/css/2016/index.html">CSS2016</a>において、橋本さんらにより「カードを用いた秘匿グループ分けプロトコル」という論文が発表された。この論文では番号が書かれたカードを用いて、メンバーをいくつかのグループに分ける方法を提案し、さらにあるグループにおいては他のメンバーが誰か分からないが、あるグループにおいては他のメンバーが誰であるのかが分かる、というプロトコルを構成した。この記事ではこの論文で発表された内容をカードではなくコンピューター上で実行する方法について述べる。 この記事のPoCは次の場所に置かれている。</p>
+<p><a href="https://gist.github.com/y-yu/e8b9d2a83c71f000646dc4ce58f0efb1" class="uri">https://gist.github.com/y-yu/e8b9d2a83c71f000646dc4ce58f0efb1</a></p>
+<p>この記事を読んで、なにか分からないことや改善するべき点を見つけた場合は気軽にコメントなどで教えて欲しい。</p>
+<h1>カードを用いた秘匿グループ分けプロトコル</h1>
+<p>まず、橋本さんらが提案したカードを用いたプロトコルについて述べる。</p>
+<h2>ナンバーカード</h2>
+<p>このプロトコルでは<strong>ナンバーカード</strong>と呼ばれる次のように番号が印刷されたカードを用いる。</p>
+\[
+\def\card#1{\boxed{\vphantom{1}#1\,}}
+
+\card{1}\,\card{2}\,\card{3}\,\card{4} \cdots \card{n}
+\]
+<p>これらのカードはいずれも裏が$\card{?}$となっており、区別することができない。</p>
+<h2>Pile-Scramble Shuffle</h2>
+<p>次に、<strong>Pile-Scramble Shuffle</strong>について述べる。これはカード列の全ての置換を一様な確率で適用する操作である。</p>
+\[
+\def\pss{\left\lvert\Big\lvert \card{?} \middle\vert \card{?} \middle\vert \cdots \middle\vert \card{?} \Big\rvert\right\rvert}
+
+\pss\, (x) \rightarrow \card{?}\, \card{?} \cdots \card{?}\, (rx)
+\]
+<h2>置換のランダマイズ</h2>
+<p>次の方法である置換$\tau$と同じ型<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>に属する置換$\rho$をランダムに選ぶ操作を定義する。</p>
+\[
+\def\twopair#1#2{%
+  \begin{matrix}
+      #1 \\
+      #2
+  \end{matrix}
+}
+\def\twocards#1#2{\twopair{\card{#1}}{\card{#2}}}
+\def\twopss#1#2{\left\lvert\left\lvert \twocards{?}{?} \middle\vert \twocards{?}{?} \middle\vert \cdots \middle\vert \twocards{?}{?} \right\rvert\right\rvert \twopair{(#1)}{(#2)}}
+\]
+<ol>
+<li><p>順番に並んだカード列を2つ用意し、裏にする</p>
+\[
+\card{1}\,\card{2} \cdots \card{n} \rightarrow \card{?}\,\card{?} \cdots \card{?} \\
+\card{1}\,\card{2} \cdots \card{n} \rightarrow \card{?}\,\card{?} \cdots \card{?}
+\]</li>
+<li><p>2つをまとめてPile-Scramble Shuffleを適用する</p>
+\[
+\twopss{id}{id} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(\sigma)}{(\sigma)}
+\]</li>
+<li><p>下のカード列に$\tau$を適用する</p>
+\[
+\twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(\sigma)}{(\sigma)} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(\sigma)}{(\tau\sigma)}
+\]</li>
+<li><p>2つをまとめてPile-Scramble Shuffleを適用する</p>
+\[
+\twopss{\sigma}{\sigma} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(r\sigma)}{(r\tau\sigma)}
+\]</li>
+<li><p>2つのカード列のうち上のカード列を開示して、上のカード列が順番に並ぶように上下のカードペアを並び換える。これにより、下の行は$(r\sigma)^{-1} = \sigma^{-1}r^{-1}$の並び換えを適用される。よって、$\sigma^{-1}r^{-1}r\tau\sigma = \sigma^{-1}\tau\sigma$というカード列が得られる</p>
+\[
+\twocards{a}{?}\, \twocards{b}{?} \cdots \twocards{c}{?} \twopair{r\sigma}{(r\sigma)} \rightarrow \twocards{1}{?}\, \twocards{2}{?} \cdots \twocards{n}{?} \twopair{id}{(\sigma^{-1}r^{-1}r\tau\sigma)} = \twocards{1}{?}\, \twocards{2}{?} \cdots \twocards{n}{?} \twopair{id}{(\sigma^{-1}\tau\sigma)} 
+\]</li>
+<li><p>生成した次のカード列$\sigma^{-1}\tau\sigma$を$\rho$とする</p>
+\[
+\card{?}\, \card{?} \cdots \card{?}\, (\sigma^{-1}\tau\sigma)
+\]</li>
+</ol>
+<h2>秘密グループ分けプロトコル</h2>
+<p>まずプレイヤーが$n$人おり、これを$m$個のグループ$A_1, A_2, \dots, A_m$にグループ分けすることを考える。また、人数が$r_i$人のグループが$m_i$個あるとすると、$n = \sum_{i=1}^{k}m_ir_i$であり$m = \sum_{i=1}^{k}m_i$である。なお用意するカードはメンバーを表す$1$から$n$までのカードと、所属を表す$n + 1$から$n + m$までのカードの合計$n + m$枚である。</p>
+<ol>
+<li>$\left&lt; (r_1 + 1)^{m_1}, (r_2 + 1)^{m_2}, \dots, (r_k + 1)^{m_k}\right &gt;$の型である置換に属する任意の$\tau$を選ぶ。ただし、この$\tau$を巡回置換の積で表したとき、その各々の因子には所属を表すナンバーを含んだサイクルにする</li>
+<li>$r = \text{max}(r_1, \dots, r_k)$として、ランダマイズに用いる$\sigma$を$2r$個まとめて作成する。ただし$\sigma$をつくるときは$1$枚目から$n$枚目のカードについてのみPile-Scramble Shuffleを適用する</li>
+<li>(2)の$\sigma$を用いて$\rho$を作成する。同じ$\sigma$を用いて$\tau^2$から$\rho^2$を作成できるので、同様に$\rho, \dots, \rho^r$を作成する</li>
+<li>プレイヤー$i$はカード列$\rho, \rho^2, \dots, \rho^r$の左から$i$番目をそれぞれ一枚ずつドローする。各プレイヤーは所属を表すカードを一枚と、同じグループのメンバー全員のカードを一枚ずつ得る</li>
+</ol>
+<h1>Mental Pokerを用いた秘密グループ分けプロトコル</h1>
+<h2>Metal Pokerとは</h2>
+<p>Mental Pokerとは信頼できる第三者なしでポーカーを実行するためのプロトコルである。詳細なプロトコルについては下記を参照して欲しい。</p>
+<p><a href="http://qiita.com/yyu/items/8d8c82ba729b06b26e67" class="uri">http://qiita.com/yyu/items/8d8c82ba729b06b26e67</a></p>
+<p>このプロトコルでは次の操作を提供する。</p>
+<ul>
+<li>公平なカードのシャッフル</li>
+<li>公平なカードのドロー</li>
+<li>公平なカードの公開</li>
+</ul>
+<h2>プロトコル</h2>
+<p>これを用いて次のように秘密グループ分けプロトコルを実装する。ただし、適宜ゼロ知識証明を用いて不正をチェックする必要がある。</p>
+<ol>
+<li>Mental Pokerのセットアップを行う</li>
+<li>$1, 2, \dots, n$のカードを2組用意しシャッフルし$c := (c_1, c_2)$とする（このときのシャッフルの置換を$\sigma_1$とする）</li>
+<li>$n + 1, n + 2, \dots, n + m$のカードを2組用意し暗号化したものを$d := (d_1, d_2)$とする</li>
+<li>任意のプレイヤーが$\tau$を選び、条件に適合することを他の全てのプレイヤーが検証する</li>
+<li>$c$と$d$を結合してこの並びを$\sigma$とし、2組のうちの片方に$\tau$を適用してシャッフルする（このときのシャッフルの置換を$r$とする）</li>
+<li>$\tau$を適用していない方を開示して、それにより$r\tau\sigma$を並び換えて$\rho = \sigma^{-1}\tau\sigma$を得る</li>
+<li>同様の操作で$\rho, \rho^2, \dots, \rho^r$を得る</li>
+<li>プレイヤー$i$は$\rho, \rho^2, \dots, \rho^r$から$i$番目のカードをドローし、所属を表すカードと他のメンバーを得る</li>
+</ol>
+<h1>まとめ</h1>
+<p>このようにすることで、カードによる秘密グループ分けをMental Pokerを用いて実装することができることが分った。秘密グループ分けはゲームマスターなし人狼において重要な役割をはたすが、今回の方法によりゲームマスターなし人狼（<a href="http://qiita.com/yyu/items/8c10fcdbc17084ac2674">Mental Jinro</a>）をMental Pokerのうえで実装できる可能性が高まった。 また、グループ分けを公平な第三者なしで実行するプロトコルは様々な応用が考えられるので、これを用いて何か有用なプロトコルを検討したい。</p>
+<h1>参考文献</h1>
+<ul>
+<li>カードを用いた秘匿グループ分けプロトコル</li>
+<li><a href="http://qiita.com/yyu/items/8d8c82ba729b06b26e67">A TTP-free mental poker protocol achieving player confidentiality</a></li>
+<li><a href="http://www.tdx.cat/bitstream/handle/10803/5804/jcr1de1.pdf">Contribution to Mental Poker</a></li>
+<li><a href="http://sci.kj.yamagata-u.ac.jp/~waki/jpn/GroupText.pdf">代数学IIのテキスト</a></li>
+<li><a href="http://www.charm-crypto.com/index.html">Charm-Crypt</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>置換$\tau$を互いに素な巡回置換の積として表わした時、$i = 1, 2, \dots, k$に対して長さが$r_i$の巡回置換がちょうど$m_i$個現れるならば、$\tau$は型$\left&lt; r_1^{m_1}, r_2^{m_2}, \dots, r_k^{m_k}\right &gt;$を持つ。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

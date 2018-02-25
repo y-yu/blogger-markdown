@@ -1,0 +1,463 @@
+<p><a href="http://www.amazon.co.jp/dp/4774172707">正規表現技術入門</a>という本の中に、正規表現のJITコンパイルという技術が紹介されている。VM型の正規表現エンジンは以前作った<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>ので、これをLLVMへコンパイルすればおもしろいのではないかと考えて、実行することにした。なお、実装にはScalaを用いた。</p>
+<blockquote>
+<p>追記： また、JVMのバイトコードへJITコンパイルする実験も書きました。 <a href="http://qiita.com/yyu/items/3c4deb39d6b0a7955572">正規表現のJITコンパイラを実装する</a></p>
+</blockquote>
+<h1>正規表現の抽象構文木</h1>
+<p>VMの実装の時に用いたものと同じく、次のデータ構造を用いる。</p>
+<pre><code class="scala">sealed trait Regex
+case object Empty                  extends Regex
+case class Let(c: Char)            extends Regex
+case class Con(a: Regex, b: Regex) extends Regex
+case class Alt(a: Regex, b: Regex) extends Regex
+case class Star(a: Regex)          extends Regex</code></pre>
+<p>例えば正規表現<code>sa*(ba*ba*)*a*e</code>を上記のデータ型（抽象構文木）で表すと次のようになる。</p>
+<pre><code>Con(Con(Let('s'), Con(Con(Star(Let('a')), Star(Con(Con(Let('b'), Star(Let('a'))), Con(Let('b'), Star(Let('a')))))), Star(Let('a')))), Let('e'))</code></pre>
+<p>正規表現から抽象構文木への変換は、今回も人間が手動<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>で行うことにする。</p>
+<h1>LLVM機械語の表現</h1>
+<p>LLVMの機械語の中から今回使うものを選び、それをデータ構造として次のように表現する。今回扱うLLVMの命令は木構造にならないので、正規表現（の抽象構文木）から直接機械語（文字列）を生成してもよかったが、デバッグが大変になるような気がしたので一旦LLVMの機械語を表現するデータへと変換してから、それを機械語（文字列）へ変換することにする。この機械語を表現するデータのことを、この記事では <strong>機械語表現</strong> と呼ぶ。</p>
+<h2>レジスタと値</h2>
+<p>まず、レジスタと値を表現するデータ型を次のように表現する。</p>
+<pre><code class="scala">sealed trait Value
+case class RInt(n: Int)            extends Value
+case class RStr(s: String)         extends Value
+case class VInt(n: Int)            extends Value
+case class BA(f: String, l: Value) extends Value</code></pre>
+<p>それぞれ次のような意味となっている。</p>
+<dl>
+  <dt><code>RInt(n)</code></dt>
+  <dd>$n$番目のレジスタ（<code>%10</code>など）<dd>
+  <dt><code>RStr(s)</code></dt>
+  <dd>名前が <i>s</s> のレジスタ（<code>%hoge</code>など）</dd>
+  <dt><code>VInt(n)</code></dt>
+  <dd>整数値$n$</dd>
+  <dt><code>BA(f, l)</code></dt>
+  <dd>ラベルを表わす値</dd>
+</dl>
+<h2>型</h2>
+<p>続いて、LLVMで今回扱う型をデータ型で表現する。</p>
+<pre><code class="scala">sealed trait Type
+case object I1   extends Type
+case object I8   extends Type
+case object I8P  extends Type
+case object I64  extends Type
+case object I64P extends Type</code></pre>
+<p>それぞれ数字が整数値のビット長である。<code>P</code>が付くものはポインタを表す。</p>
+<h2>条件</h2>
+<p>比較を行う際に必要な条件を表すデータ型である。</p>
+<pre><code class="scala">sealed trait Cond
+case object Eq extends Cond</code></pre>
+<p>実装してみて分かったが、今回は<code>Eq</code>しか使わなかったのでこのデータ型を用意する必要はなかったかもしれない。</p>
+<h2>命令</h2>
+<p>LLVMの命令の中で、今回用いるものを次のように表現する。</p>
+<pre><code class="scala">sealed trait Inst
+case class Label(n: Value)                                    extends Inst
+case class Assign(l: Value, r: Inst)                          extends Inst
+case class Add(t: Type, v: Value, n: Int)                     extends Inst
+case class Cmp(c: Cond, t: Type, a: Value, b: Value)          extends Inst
+case class Br1(d: Value)                                      extends Inst
+case class Br2(c: Value, t: Value, e: Value)                  extends Inst
+case class Call(f: String, rt: Type, at: List[(Type, Value)]) extends Inst
+case class Load(t: Type, p: Value)                            extends Inst
+case class Store(vt: Type, v: Value, pt: Type, pv: Value)     extends Inst
+case class GetElementPtr(t: Type, v: Value, i: Value)         extends Inst</code></pre>
+<p>まず、<code>Br1</code>と<code>Br2</code>は両方ともラベルへジャンプする命令を表している。これらの違いは、<code>Br1</code>は指定されたラベルはジャンプする命令であるのに対して、<code>Br2</code>はまず二値のレジスタを受けとり、その結果に応じてそれぞれへジャンプするというものである。 また、<code>GetElementPtr</code>は配列などからインデックス$i$の値が格納されているアドレスを取得する命令である。 その他の命令については、たぶんなんとなく分かると思うので省略する。</p>
+<h1>正規表現から機械語表現への変換</h1>
+<h2>実装方針の概要</h2>
+<p>前回の記事や<a href="https://swtch.com/~rsc/regexp/regexp2.html">Regular Expression Matching: the Virtual Machine Approach</a>で紹介されているVMは二つのレジスタを使っていた。</p>
+<dl>
+  <dt>PC</dt>
+  <dd>次に実行するバイトコードの位置</dd>
+  <dt>SP</dt>
+  <dd>マッチを行う文字の位置</dd>
+</dl>
+<p>このVMは次のような手順でマッチングを行う。</p>
+<ol>
+<li><em>PC</em> の位置にあるバイトコードを取り出す（フェッチ）</li>
+<li>バイトコードを命令<code>char</code>、<code>split</code>、<code>jmp</code>、<code>match</code>のどれかへディスパッチ</li>
+<li>命令に対応する処理を実行</li>
+<li><em>PC</em> を更新</li>
+</ol>
+<p>機械語へ変換することでバイトコードが機械語になり、それをCPUか何かが実行する形になるので、バイトコードをフェッチする必要はなくなる。よって <em>PC</em> はなくすことができる。では<code>split</code>や<code>jmp</code>のように、どこか特定の場所から命令を実行したくなった場合、 <em>PC</em> なしでどうするのか疑問に思うかもしれない。このような場合は、マッチを行うLLVM上の関数に<strong>ラベル</strong>を引数として渡し、それを使って好きな場所から命令を開始できるようにする。 LLVM上でマッチングを行う関数を<code>@test</code>とすると、それは次のような型を持つ。</p>
+<pre><code class="llvm">define i1 @test(i8* %str, i8* %l, i64 %sp_value)</code></pre>
+<p>第一引数が文字列のポインタで、第二引数がラベルのポインタ、そして第三引数が <em>SP</em> となる。</p>
+<h2>補助関数</h2>
+<p>次のような補助関数を定義しておく。</p>
+<pre><code class="scala">def nsp    = RStr("sp")
+def nstr   = RStr("str")
+def nmatch = RStr("match")
+def nmiss  = RStr("miss")
+
+def fname = "@test"
+
+def assign(r: Inst, n: Int): (Inst, Int) = (Assign(RInt(n), r), n + 1)
+def mk_label(n: Int): (Inst, Int) = (Label(RInt(n)), n + 1)</code></pre>
+<p><code>n</code>から始まるものは機械語の中でよく使われる変数やラベルである。</p>
+<h2>実装</h2>
+<p>正規表現の種類（文字、連接、選択、繰り返し）に対応して次のように機械語表現を生成する。</p>
+<h3>文字</h3>
+<pre><code class="scala">case Let(c) =>
+  val (i1, n1) = mk_label(n)
+  val (i2, n2) = assign(Load(I64P, nsp), n1)
+  val (i3, n3) = assign(GetElementPtr(I8P, nstr, RInt(n1)), n2)
+  val (i4, n4) = assign(Add(I64, RInt(n1), 1), n3)
+  val  i5      = Store(I64, RInt(n3), I64P, nsp)
+  val (i6, n5) = assign(Load(I8P, RInt(n2)), n4)
+  val (i7, n6) = assign(Cmp(Eq, I8, RInt(n4), VInt(c.toInt)), n5)
+  val  i8      = Br2(RInt(n5), RInt(n6), nmiss)
+  (List(i1, i2, i3, i4, i5, i6, i7, i8), n6)</code></pre>
+<p>これは次のことをする機械語表現を生成する。</p>
+<ol>
+<li>ラベルを生成する</li>
+<li>スタックにある <em>SP</em> の値を読み込む</li>
+<li>文字列<code>nstr</code>の位置 <em>SP</em> にある文字のアドレスを取得する</li>
+<li><em>SP</em> の値に$1$を足し、それをスタックの <em>SP</em> に保存する</li>
+<li>(3)で取得したアドレスにある文字を取得する</li>
+<li>(5)で取得した文字と、<code>c</code>を比較<a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a>する</li>
+<li>等しければ次へ遷移し、間違っていたら<code>nmiss</code>へ遷移する</li>
+</ol>
+<h3>連接</h3>
+<pre><code class="scala">case Con(a, b) =>
+  val (i1, n1) = loop(a, n)
+  val (i2, n2) = loop(b, n1)
+  (i1 ++ i2, n2)</code></pre>
+<p>単に両側にある正規表現を機械語表現へ変換して、それらを結合する。</p>
+<h3>選択</h3>
+<pre><code class="scala">case Alt(a, b) =>
+  val (i1, n1) = mk_label(n)
+  val (i2, n2) = assign(Load(I64P, nsp), n1)
+  val (i3, _)  = assign(Call(fname, I1, List((I8P, BA(fname, RInt(n2 + 1))), (I64, RInt(n1)))), n2)
+  val (i4, n4) = loop(a, n2 + 1)
+  val (i5, n5) = mk_label(n4)
+  val (i6, n6) = loop(b, n5)
+  val i7       = Br1(RInt(n6))
+  val i8       = Br2(RInt(n2), nmatch, RInt(n5))
+  (List(i1, i2, i3, i8) ++ i4 ++ List(i5, i7) ++ i6, n6)</code></pre>
+<p>これは次のことをする機械語表現を生成する。</p>
+<ol>
+<li>ラベルを生成する</li>
+<li>スタックにある <em>SP</em> の値を読み込む</li>
+<li>選択の左側（正規表現<code>a</code>）を機械語表現へコンパイルする</li>
+<li>(3)の機械語表現に、選択の右側（<code>b</code>）の処理をスキップする機械語表現を追加する</li>
+<li>選択の右側（正規表現<code>b</code>）を機械語表現へコンパイルする</li>
+<li><code>@test</code>を再帰的に呼び出す。この時<code>a</code>を表す機械語表現のラベルを渡す</li>
+<li>(5)が成功すればマッチ成功へ遷移し、そうでなければ<code>b</code>を表す機械語表現のラベルへジャンプする</li>
+</ol>
+<h3>繰り返し</h3>
+<pre><code class="scala">case Star(Star(r)) => loop(Star(r), n)
+
+case Star(r) =>
+  val (i1, n1) = mk_label(n)
+  val (i2, n2) = assign(Load(I64P, nsp), n1)
+  val (i3, _)  = assign(Call(fname, I1, List((I8P, BA(fname, RInt(n2 + 1))), (I64, RInt(n1)))), n2)
+  val (i4, n3) = loop(r, n2 + 1)
+  val (i5, n4) = mk_label(n3)
+  val  i6      = Br1(RInt(n))
+  val  i7      = Br2(RInt(n2), nmatch, RInt(n4))
+  (List(i1, i2, i3, i7) ++ i4 ++ List(i5, i6), n4)</code></pre>
+<p>まず、無限ループを回避する<a href="#fn4" class="footnote-ref" id="fnref4"><sup>4</sup></a>ために、二重になった繰り返しを除去する。そして、次のことをする機械語表現を生成する。</p>
+<ol>
+<li>ラベルを生成する</li>
+<li>スタックにある <em>SP</em> の値を読み込む</li>
+<li>繰り返しの中身（正規表現<code>r</code>）を機械語表現へコンパイルする</li>
+<li>(3)の機械語表現の末尾に、(1)で生成したラベルへジャンプする命令を追加する</li>
+<li><code>@test</code>を再帰的に呼び出す。この時<code>r</code>を表す機械語表現のラベルを渡す</li>
+<li>(5)が成功すればマッチ成功へ遷移し、次の命令のラベルへジャンプする</li>
+</ol>
+<h1>機械語表現から機械語への変換</h1>
+<p>機械語表現から機械語（文字列）へ変換するプリンタを次のように定義する。機械語表現に対応して説明する。</p>
+<h2>レジスタと値</h2>
+<p>LLVMの機械語ではレジスタやラベルの先頭に<code>%</code>を付けるので、次のようにする。ただし、ラベルをプリントする際は<code>%</code>を付けない。</p>
+<pre><code class="scala">def label_of_value(v: Value): String = v match {
+  case RInt(n) => n.toString
+  case _       => throw new Exception()
+}
+
+def var_of_value(v: Value): String = v match {
+  case RInt(n)  => "%" + n
+  case RStr(s)  => "%" + s
+  case VInt(n)  => n.toString
+  case BA(f, l) => "blockaddress(" + f + ", " + var_of_value(l) + ")"
+}</code></pre>
+<h2>条件</h2>
+<pre><code class="scala">def pp_cond(c: Cond): String = c match {
+  case Eq => "eq"
+}</code></pre>
+<h2>型と型のサイズ</h2>
+<p>型と、<code>load</code>や<code>store</code>の際に必要となる型のサイズに関する変換を次のように定義する。</p>
+<pre><code class="scala">def pp_type(t: Type): String = t match {
+  case I1   => "i1"
+  case I8   => "i8"
+  case I8P  => "i8*"
+  case I64  => "i64"
+  case I64P => "i64*"
+}
+
+def align(t: Type): Int = t match {
+  case I8   => 1
+  case I8P  => 8
+  case I64  => 8
+  case I64P => 8
+  case I1   => throw new Exception()
+}</code></pre>
+<h2>命令</h2>
+<p>機械語表現を次のように機械語へ変換する。</p>
+<pre><code class="scala">def pp_inst(i: Inst, tab: String = ""): String =
+  tab + (i match {
+    case Label(n) =>
+      "\n; <label>:" + label_of_value(n)
+    case Assign(l, r) =>
+      var_of_value(l) + " = " + pp_inst(r)
+    case Add(t, v, n) =>
+      "add nsw " + pp_type(t) + " " + var_of_value(v) + ", " + n
+    case Cmp(c, t, a, b) =>
+      "icmp " + pp_cond(c) + " " + pp_type(t) + " " + var_of_value(a) + ", " + var_of_value(b)
+    case Br1(d) =>
+      "br label " + var_of_value(d)
+    case Br2(c, t, e) =>
+      "br i1 " + var_of_value(c) + ", label " + var_of_value(t) + ", label " + var_of_value(e)
+    case Call(f, rt, a) =>
+      val s = a.foldLeft("i8* %str")((x, y) => x + ", " + pp_type(y._1) + " " + var_of_value(y._2))
+      "call " + pp_type(rt) + " " + f + "(" + s + ")"
+    case Load(t, p) =>
+      "load " + pp_type(t) + " " + var_of_value(p) + ", align " + align(t)
+    case Store(vt, v, pt, pv) =>
+      "store " + pp_type(vt) + " " + var_of_value(v) + ", " + pp_type(pt) + " " +
+        var_of_value(pv) + ", align " + align(vt)
+    case GetElementPtr(t, v, i) =>
+      "getelementptr inbounds " + pp_type(t) + " " + var_of_value(v) + ", i64 " + var_of_value(i)
+  })</code></pre>
+<h2>機械語として必要な命令を追加する</h2>
+<p>これで命令をコンパイルすることはできたが、LLVMとしての体裁を保つためにいくつか必要な機械語（例えば<code>main</code>関数や、<code>printf</code>関数を使うための諸々など）を追加する<code>make</code>という関数を定義する。</p>
+<pre><code class="scala">def make(i: List[Inst]): String = {
+  val s =
+    "@.match   = private unnamed_addr constant [7 x i8] c\"match\\0A\\00\", align 1\n"  +
+    "@.unmatch = private unnamed_addr constant [9 x i8] c\"unmatch\\0A\\00\", align 1\n\n" +
+    "define i1 @test(i8* %str, i8* %l, i64 %sp_value) {\n" +
+    "  %sp = alloca i64, align 8\n" +
+    "  store i64 %sp_value, i64* %sp, align 8\n" +
+    "  %isnull = icmp eq i8* %l, null\n" +
+    "  br i1 %isnull, label %1, label %jump\n\n" +
+    "jump:\n" +
+    "  indirectbr i8* %l, [" +
+      i.foldRight(List[String]())((x, y) => x match {
+        case Label(n) => ("label " + var_of_value(n)) :: y
+        case _        => y
+      }).mkString(", ") + "]\n"
+
+  val llvmir = i.map(pp_inst(_, "  ")).foldLeft("")((x, y) => x + y + "\n")
+
+  val e =
+    "\nmiss:\n" +
+    "  ret i1 0\n\n" +
+    "match:\n" +
+    "  ret i1 1\n" +
+    "}\n\n" +
+    "define i32 @main(i32 %argc, i8** %argv) {\n" +
+    "  %arg1 = getelementptr inbounds i8** %argv, i64 1\n" +
+    "  %str  = load i8** %arg1, align 8\n" +
+    "  %res  = call i1 @test(i8* %str, i8* null, i64 0)\n" +
+    "  br i1 %res, label %match, label %unmatch\n\n" +
+    "match:\n" +
+    "  call i32 (i8*, ...)* @printf(i8* getelementptr inbounds ([7 x i8]* @.match, i32 0, i32 0))\n" +
+    "  br label %ret\n\n" +
+    "unmatch:\n" +
+    "  call i32 (i8*, ...)* @printf(i8* getelementptr inbounds ([9 x i8]* @.unmatch, i32 0, i32 0))\n" +
+    "  br label %ret\n\n" +
+    "ret:\n" +
+    "  ret i32 0\n" +
+    "}\n\n" +
+    "declare i32 @printf(i8*, ...)"
+
+  s + llvmir + e
+}</code></pre>
+<h1>具体例</h1>
+<p>今回のコードは<a href="https://gist.github.com/yoshimuraYuu/8fba01232bfcc05656c5">Gist</a>に置いてあるほか、<a href="https://ideone.com/ahuaWI">ideone</a>で実行することができる。</p>
+<p>試しに偶数個の <em>b</em> と任意の数の <em>a</em> からなる文字列にマッチする正規表現<code>sa*(ba*ba*)*a*e</code><a href="#fn5" class="footnote-ref" id="fnref5"><sup>5</sup></a>に対応するLLVMのコードを生成する。まず、この正規表現を次のような抽象構文木へ手動<a href="#fn6" class="footnote-ref" id="fnref6"><sup>6</sup></a>で変換する。</p>
+<pre><code>Con(Con(Let('s'), Con(Con(Star(Let('a')), Star(Con(Con(Let('b'), Star(Let('a'))), Con(Let('b'), Star(Let('a')))))), Star(Let('a')))), Let('e'))</code></pre>
+<p>これを先程のScalaで書いたコンパイラに投入すると、次のようなLLVMのコードが得られる。</p>
+<pre><code class="llvm">@.match   = private unnamed_addr constant [7 x i8] c"match\0A\00", align 1
+@.unmatch = private unnamed_addr constant [9 x i8] c"unmatch\0A\00", align 1
+
+define i1 @test(i8* %str, i8* %l, i64 %sp_value) {
+  %sp = alloca i64, align 8
+  store i64 %sp_value, i64* %sp, align 8
+  %isnull = icmp eq i8* %l, null
+  br i1 %isnull, label %1, label %jump
+
+jump:
+  indirectbr i8* %l, [label %1, label %7, label %10, label %16, label %17, label %20, label %26, label %29, label %35, label %36, label %42, label %45, label %51, label %52, label %53, label %56, label %62, label %63, label %69]
+  
+; <label>:1
+  %2 = load i64* %sp, align 8
+  %3 = getelementptr inbounds i8* %str, i64 %2
+  %4 = add nsw i64 %2, 1
+  store i64 %4, i64* %sp, align 8
+  %5 = load i8* %3, align 8
+  %6 = icmp eq i8 %5, 115
+  br i1 %6, label %7, label %miss
+  
+; <label>:7
+  %8 = load i64* %sp, align 8
+  %9 = call i1 @test(i8* %str, i8* blockaddress(@test, %10), i64 %8)
+  br i1 %9, label %match, label %17
+  
+; <label>:10
+  %11 = load i64* %sp, align 8
+  %12 = getelementptr inbounds i8* %str, i64 %11
+  %13 = add nsw i64 %11, 1
+  store i64 %13, i64* %sp, align 8
+  %14 = load i8* %12, align 8
+  %15 = icmp eq i8 %14, 97
+  br i1 %15, label %16, label %miss
+  
+; <label>:16
+  br label %7
+  
+; <label>:17
+  %18 = load i64* %sp, align 8
+  %19 = call i1 @test(i8* %str, i8* blockaddress(@test, %20), i64 %18)
+  br i1 %19, label %match, label %53
+  
+; <label>:20
+  %21 = load i64* %sp, align 8
+  %22 = getelementptr inbounds i8* %str, i64 %21
+  %23 = add nsw i64 %21, 1
+  store i64 %23, i64* %sp, align 8
+  %24 = load i8* %22, align 8
+  %25 = icmp eq i8 %24, 98
+  br i1 %25, label %26, label %miss
+  
+; <label>:26
+  %27 = load i64* %sp, align 8
+  %28 = call i1 @test(i8* %str, i8* blockaddress(@test, %29), i64 %27)
+  br i1 %28, label %match, label %36
+  
+; <label>:29
+  %30 = load i64* %sp, align 8
+  %31 = getelementptr inbounds i8* %str, i64 %30
+  %32 = add nsw i64 %30, 1
+  store i64 %32, i64* %sp, align 8
+  %33 = load i8* %31, align 8
+  %34 = icmp eq i8 %33, 97
+  br i1 %34, label %35, label %miss
+  
+; <label>:35
+  br label %26
+  
+; <label>:36
+  %37 = load i64* %sp, align 8
+  %38 = getelementptr inbounds i8* %str, i64 %37
+  %39 = add nsw i64 %37, 1
+  store i64 %39, i64* %sp, align 8
+  %40 = load i8* %38, align 8
+  %41 = icmp eq i8 %40, 98
+  br i1 %41, label %42, label %miss
+  
+; <label>:42
+  %43 = load i64* %sp, align 8
+  %44 = call i1 @test(i8* %str, i8* blockaddress(@test, %45), i64 %43)
+  br i1 %44, label %match, label %52
+  
+; <label>:45
+  %46 = load i64* %sp, align 8
+  %47 = getelementptr inbounds i8* %str, i64 %46
+  %48 = add nsw i64 %46, 1
+  store i64 %48, i64* %sp, align 8
+  %49 = load i8* %47, align 8
+  %50 = icmp eq i8 %49, 97
+  br i1 %50, label %51, label %miss
+  
+; <label>:51
+  br label %42
+  
+; <label>:52
+  br label %17
+  
+; <label>:53
+  %54 = load i64* %sp, align 8
+  %55 = call i1 @test(i8* %str, i8* blockaddress(@test, %56), i64 %54)
+  br i1 %55, label %match, label %63
+  
+; <label>:56
+  %57 = load i64* %sp, align 8
+  %58 = getelementptr inbounds i8* %str, i64 %57
+  %59 = add nsw i64 %57, 1
+  store i64 %59, i64* %sp, align 8
+  %60 = load i8* %58, align 8
+  %61 = icmp eq i8 %60, 97
+  br i1 %61, label %62, label %miss
+  
+; <label>:62
+  br label %53
+  
+; <label>:63
+  %64 = load i64* %sp, align 8
+  %65 = getelementptr inbounds i8* %str, i64 %64
+  %66 = add nsw i64 %64, 1
+  store i64 %66, i64* %sp, align 8
+  %67 = load i8* %65, align 8
+  %68 = icmp eq i8 %67, 101
+  br i1 %68, label %69, label %miss
+  
+; <label>:69
+  br label %match
+
+miss:
+  ret i1 0
+
+match:
+  ret i1 1
+}
+
+define i32 @main(i32 %argc, i8** %argv) {
+  %arg1 = getelementptr inbounds i8** %argv, i64 1
+  %str  = load i8** %arg1, align 8
+  %res  = call i1 @test(i8* %str, i8* null, i64 0)
+  br i1 %res, label %match, label %unmatch
+
+match:
+  call i32 (i8*, ...)* @printf(i8* getelementptr inbounds ([7 x i8]* @.match, i32 0, i32 0))
+  br label %ret
+
+unmatch:
+  call i32 (i8*, ...)* @printf(i8* getelementptr inbounds ([9 x i8]* @.unmatch, i32 0, i32 0))
+  br label %ret
+
+ret:
+  ret i32 0
+}
+
+declare i32 @printf(i8*, ...)</code></pre>
+<p>生成されたLLVMの機械語をエディタなどに貼り付けて、ここでは <em>regex.ll</em> という名前で保存する。そしてコンピューターにLLVMをインストールして次のようなコマンドを実行する。</p>
+<pre><code class="console">$ llc regex.ll && gcc regex.s</code></pre>
+<p>成功すると <em>a.out</em> というプログラムができているので、それのコマンドライン引数にマッチさせたい文字列を与えれば、マッチングを行うことができる。</p>
+<pre><code class="console">$ ./a.out saabbaabbe
+match
+
+$ ./a.out saabbaabbabe
+unmatch</code></pre>
+<h1>まとめ</h1>
+<p>最小の正規表現をLLVMへ変換するコードは規模で言えば200行程度なので、割とシンプルに書けたと思う。今回はシンプルに実装することが目標だったのでベンチマークなどは取っていないが、何かの実装と比べてみるのもおもしろいかもしれない。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="http://www.amazon.co.jp/dp/4774172707">正規表現技術入門</a></li>
+<li><a href="https://swtch.com/~rsc/regexp/regexp2.html">Regular Expression Matching: the Virtual Machine Approach</a></li>
+<li><a href="http://www.amazon.co.jp/dp/4844334158">きつねさんでもわかるLLVM ~コンパイラを自作するためのガイドブック~</a></li>
+<li><a href="http://llvm.org/docs/LangRef.html">LLVM Language Reference Manual</a></li>
+</ul>
+<h1>関連文献</h1>
+<ul>
+<li><a href="http://steps.dodgson.org/bn/2007/12/15/">正規表現はお好き?</a></li>
+<li><a href="http://d.hatena.ne.jp/miura1729/20080925/1222330236">Rubyによる正規表現コンパイラ(その2)</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p><a href="http://qiita.com/yyu/items/84b1a00459408d1a7321">VM型の正規表現エンジンを実装する</a>を参照。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>@kmizu さんと @koizuka さんに、正規表現から抽象構文木へのパーサを作っていただいたので、そちらを利用することもできる。<a href="http://qiita.com/yyu/items/a0ef2d2204c137707f3f#comment-af7f9a78cf6fb5b0a84d">コメント</a>を参考にするとよい。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p>LLVMでは文字と文字の比較はできないので、<code>c</code>をASCIIコードに基づく数字へ変換して数字と数字の比較を行っている。<a href="#fnref3" class="footnote-back">↩</a></p></li>
+<li id="fn4"><p><a href="http://qiita.com/yyu/items/84b1a00459408d1a7321#%E8%BF%BD%E8%A8%98%E4%BA%8C%E9%87%8D%E3%81%AE%E7%B9%B0%E3%82%8A%E8%BF%94%E3%81%97%E3%81%A7%E3%82%B9%E3%82%BF%E3%83%83%E3%82%AF%E3%82%AA%E3%83%BC%E3%83%90%E3%83%BC%E3%83%95%E3%83%AD%E3%83%BC">前回の記事（加筆部分）</a>を参照。<a href="#fnref4" class="footnote-back">↩</a></p></li>
+<li id="fn5"><p>この正規表現には文字列の開始や終端を表す方法がないので、与えられる文字列が <em>s</em> から始まり <em>e</em> で終わると仮定し開始と終端を擬似的に表現している。<a href="#fnref5" class="footnote-back">↩</a></p></li>
+<li id="fn6"><p>@kmizu さんと @koizuka さんに、正規表現から抽象構文木へのパーサを作っていただいたので、そちらを利用することもできる。<a href="http://qiita.com/yyu/items/a0ef2d2204c137707f3f#comment-af7f9a78cf6fb5b0a84d">コメント</a>を参考にするとよい。<a href="#fnref6" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

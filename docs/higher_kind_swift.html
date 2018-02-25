@@ -1,0 +1,157 @@
+<h1>はじめに</h1>
+<p><a href="http://qiita.com/lyrical_logical/items/2d68d378a97ea0da88c0">Java で higher kinded polymorphism を実現する</a>を読み、これをSwiftに移植すれば何かの役に立つかもしれないと考えた。この記事の完全なソースコードはGitHubの次のリポジトリから入手できる。</p>
+<ul>
+<li><a href="https://github.com/y-yu/higher-kinded-polymorphism-in-swift" class="uri">https://github.com/y-yu/higher-kinded-polymorphism-in-swift</a></li>
+</ul>
+<p>この記事を読んで疑問や改善点がある場合には、気軽にコメントなどで教えて欲しい。</p>
+<h1>Higher Kinded Polymorphismとは？</h1>
+<p><em>Higher Kinded Polymorphism</em>は日本語で<strong>高階多相</strong>などと呼ばれるもので、例えばSwiftで次のようなプロトコル<code>Functor</code><a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>を作成したいとする。</p>
+<pre><code class="swift">protocol Functor {
+    associatedtype F
+    associatedtype E
+    
+    func mapF&lt;B&gt;(_ f: (E) -&gt; B) -&gt; F&lt;B&gt;
+}</code></pre>
+<p>型パラメータ<code>F</code>には、たとえば<code>Array</code>や<code>Set</code>など何か型パラメータを取るような型パラメータを用いる。しかしSwiftはこのような何か型パラメータを取るような型パラメータを書くことができず、次のようにコンパイルエラーとなる。</p>
+<pre><code>Cannot specialize non-generic type 'Self.F'</code></pre>
+<p>たとえばプログラム言語Scalaではこれをこのように書くことができる。</p>
+<pre><code class="scala">trait Functor {
+  type F[_]
+  type E
+  
+  def mapF[B](f: E =&gt; B): F[B]
+}</code></pre>
+<p>このように、型パラメータが何かの型パラメータを取ることで、型パラメータ<code>F</code>が<code>Array</code>や<code>Set</code>など何であっても動作するような抽象的な関数を定義できるようになる。このような多相性のことをHigher Kinded Polymorphismと呼ぶ。</p>
+<h1>SwiftでHigher Kinded Polymorphism</h1>
+<p>まず、次のようなクラス<code>App</code>とプロトコル<code>Newtype1</code>を作る。</p>
+<pre><code class="swift">class App&lt;T, A&gt; {
+    var underlying: Any
+    
+    init(_ a: Any) {
+        underlying = a
+    }
+}</code></pre>
+<pre><code class="swift">protocol Newtype1 {
+    associatedtype T
+    associatedtype A
+    
+    func inj() -&gt; App&lt;T, A&gt;
+}
+
+extension Newtype1 {
+    func inj() -&gt; App&lt;T, A&gt; {
+        return App(self)
+    }
+}</code></pre>
+<p>クラス<code>App</code>は2つの型パラメータを取り、コンストラクターに渡された引数をメンバ変数<code>underlying</code>に格納しておく。また、プロトコル<code>Newtype1</code>は関数<code>inj</code>を提供し、これは<code>App&lt;T, A&gt;</code>への変換を表す。 これらを利用してたとえば<code>Array</code>を高階に扱いたいときは次のようにする。</p>
+<pre><code class="swift">class ArrayConstructor { }
+
+extension Array: Newtype1 {
+    typealias T = ArrayConstructor
+    typealias A = Element
+}
+
+extension App where T: ArrayConstructor {
+    func prj() -&gt; Array&lt;A&gt; {
+        return (self.underlying as! Array&lt;A&gt;)
+    }
+}</code></pre>
+<p>このようにすることで、次の2つの操作が可能となる。</p>
+<ul>
+<li>任意の型<code>A</code>について、<code>Array&lt;A&gt;</code>から関数<code>inj</code>で<code>App&lt;ArrayConstructor, A&gt;</code>へ変換する</li>
+<li>任意の型<code>A</code>について、<code>App&lt;ArrayConstructor, A&gt;</code>から関数<code>prj</code>で<code>Array&lt;A&gt;</code>へ変換する</li>
+</ul>
+<p>このようにすることで、今まで具体的になっていない型<code>Array</code>を型パラメータとして渡すことはできなかったが、クラス<code>App</code>と<code>ArrayConstructor</code>を利用して<code>App&lt;ArrayConstructor, A&gt;</code>という形で渡せるようになった。 同様に二分木を表す<code>Tree</code>についても次のように作ることができる。まずは<code>Tree</code>を次のように定義する。</p>
+<pre><code class="swift">indirect enum Tree&lt;Element&gt; {
+    case Leaf
+    case Node(l: Tree&lt;Element&gt;, a: Element, r: Tree&lt;Element&gt;)
+    
+    func toString() -&gt; String {
+        switch self {
+        case .Leaf:
+            return "L"
+        case let .Node(l, a, r):
+            return "N(\(l.toString()), \(a), \(r.toString()))"
+        }
+    }
+}</code></pre>
+<p>そして次のようにエクステンションを定義する。</p>
+<pre><code class="swift">class TreeConstructor { }
+
+extension Tree: Newtype1 {
+    typealias T = TreeConstructor
+    typealias A = Element
+}
+
+extension App where T: TreeConstructor {
+    func prj() -&gt; Tree&lt;A&gt; {
+        return (self.underlying as! Tree&lt;A&gt;)
+    }
+}</code></pre>
+<p>これらを利用して最初に例として挙げたプロトコル<code>Functor</code>を作成する。まずプロトコル<code>Functor</code>を次のように定義する。</p>
+<pre><code class="swift">protocol Functor {
+    associatedtype F
+    associatedtype E
+    
+    func mapF&lt;B&gt;(_ f: (E) -&gt; B) -&gt; App&lt;F, B&gt;
+}</code></pre>
+<p>最初の例と異なり、<code>Functor</code>は最後の結果を<code>App&lt;F, B&gt;</code>という型で返すようしている。 型<code>Array</code>の値がプロトコル<code>Functor</code>の関数<code>mapF</code>が利用できるように、次のようなコードを実装する。</p>
+<pre><code class="swift">extension Array: Functor {
+    typealias F = ArrayConstructor
+    typealias E = Element
+    
+    func mapF&lt;B&gt;(_ f: (E) -&gt; B) -&gt; App&lt;F, B&gt; {
+        return self.map(f).inj()
+    }
+}</code></pre>
+<p><code>Tree</code>の場合はやや複雑だが次のようになる。</p>
+<pre><code class="swift">extension Tree: Functor {
+    typealias F = TreeConstructor
+    typealias E = Element
+    
+    private func loop&lt;B&gt;(_ x: Tree&lt;E&gt;, _ f: (E) -&gt; B) -&gt; Tree&lt;B&gt; {
+        switch x {
+        case .Leaf:
+            return .Leaf
+        case let .Node(l, a, r):
+            return Tree&lt;B&gt;.Node(l: loop(l, f), a: f(a), r: loop(r, f))
+        }
+    }
+    
+    func mapF&lt;B&gt;(_ f: (E) -&gt; B) -&gt; App&lt;F, B&gt; {
+        return loop(self, f).inj()
+    }
+}</code></pre>
+<p>最後に、本当に<code>Array</code>や<code>Tree</code>から関数<code>mapF</code>が呼び出せるのかを確認する。</p>
+<pre><code class="swift">print( [1, 2, 3, 4, 5].mapF({ (x: Int) -&gt; Int in return x + 1 }).prj() )
+
+let tree: Tree&lt;Int&gt; =
+    .Node(
+        l: .Node(l: .Leaf, a: 1, r: .Leaf),
+        a: 2,
+        r: .Node(l: .Leaf, a: 3, r: .Leaf)
+    )
+
+print( tree.mapF({ (x: Int) -&gt; Int in return x + 1 }).prj().toString() )</code></pre>
+<p>これは次の2つの結果を求める。</p>
+<ul>
+<li><code>Int</code>の配列の全ての要素を$+1$した配列を表示する</li>
+<li><code>Int</code>の二分木の全ての要素を$+1$した二分木を表示する</li>
+</ul>
+<p>結果は次のようになる。</p>
+<pre><code>[2, 3, 4, 5, 6]
+N(N(L, 2, L), 3, N(L, 4, L))</code></pre>
+<p>このように、正しく関数<code>mapF</code>が実行できていることが分かる。</p>
+<h1>まとめ</h1>
+<p>このようにしてSwiftでもHigher Kinded Polymorphismを実現することができた。今回は<code>Array</code>や<code>Tree</code>のような型パラメータを1つ取るような型のみを例に挙げたが、たとえば<code>Either</code>のような2つの型パラメータを取る型もクラス<code>App</code>を入れ子にして<code>Newtype2</code>を作ることで同様に実装できると考えられる。これらによってより高度なプログラムを書くことができればいいと思う。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="http://qiita.com/lyrical_logical/items/2d68d378a97ea0da88c0">Java で higher kinded polymorphism を実現する</a></li>
+<li><a href="https://www.cl.cam.ac.uk/~jdy22/papers/lightweight-higher-kinded-polymorphism.pdf">Lightweight higher-kinded polymorphism</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p><code>Functor</code>は関数型界隈で意味のある言葉だが、この記事では<code>Functor</code>が何を意味するのかを知っていなくてもよい。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

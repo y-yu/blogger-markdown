@@ -1,0 +1,408 @@
+<h1>Introduction</h1>
+<p><a href="https://people.csail.mit.edu/rivest/ShamirRivestAdleman-MentalPoker.pdf"><em>Mental Poker</em></a> is a protocol that allows us a fair poker game without any fair third-party<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a> over the phone or the Internet. If there are some malicious players among the participants of the poker game, they can do some cheats, for example, they will pretend to take cards which they want, or to open cards that they have not drawn. Mental Poker is a novel and traditional protocol that can prevent us from these cheats and protect a secret such as players hand from others, even though there is no fair third-party. Mental Poker was discovered in 1981 by Shamir, Rivest and Adleman who invented RSA cryptography<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>, and its research has been continued recently. Using the three operations: <em>shuffle</em>, <em>draw</em> and <em>open the hand</em>, which are required for playing poker, other games like Mahjong can be played by the same way. So we think that Mental Poker provides fairer games. However, we did not know whether we could play more complicate games like <a href="https://en.wikipedia.org/wiki/Mafia_(party_game)"><em>Werewolf (Mafia)</em></a> using Mental Poker or not. Werewolf is a game that divides players into two groups, <em>werewolves</em> and <em>villagers</em>, and then Villagers can <em>not</em> distinguish whether the other players are werewolves or villagers, while werewolves can distinguish all players are werewolves or villagers. It seemed impossible to execute such a flexible grouping without a fair third-party. But recently, a paper that says the grouping like this can be done was submitted. So I consider Werewolf can be played using Mental Poker. In this article, I will first explain about an intuitive Mental Poker protocol, next introduce <em>permutations</em>, and then discuss <em>secure groping protocol</em> with <em>number cards</em> and <em>voting</em>, finally I will talk about making up a fair Werewolf game without a moderator<a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a>.</p>
+<h1>Intuitive Mental Poker</h1>
+<p>In this section, I will make a Mental Poker protocol with physical tools like <em>boxes</em> and <em>padlocks</em>. If you would like to lean about mathematical methods of Mental Poker, you can read references.</p>
+<h2>Boxes and Padlocks</h2>
+<p>We see the way how Alice and Bob in remote place can do three operations, shuffle, draw and open without any cheats using boxes and padlocks. In this section, the box is a container that does not see at all what is contained from the outside. You can put any number of padlocks on the box. If there is only the padlock that is put by you, you can remove the padlock using your key and you can see the content inside the box, but you cannot open the box where one or more of the other's padlocks are put. For the sake of simplicity we assume that only two people, Alice and Bob, will run the protocol.</p>
+<h2>Shuffle</h2>
+<p>We shuffle the $n$ cards using boxes and padlocks as follows.</p>
+<ol>
+<li>Alice puts cards one by one into a box, then shuffles the boxes after put padlocks $A_O$ on every box</li>
+<li>Alice sends all boxes to Bob using courier etc.</li>
+<li>Bob shuffles the boxes</li>
+<li>Bob puts his padlocks $B_i$ on each box $i$, one by one</li>
+<li>Bob sends all boxes to Alice</li>
+<li>Alice removes padlocks $A_O$ from all boxes</li>
+<li>Alice puts her padlocks $A_i$ one by one on each box $i$</li>
+</ol>
+<p>In (2), Bob is unable to open any box because they sent to him are locked with Alice's padlocks. Even if Alice arranges the boxes in her intentional order, it does not makes sense because Bob shuffles the boxes in (3). In addition, Bob can not see the content inside any box because they are locked by Alice, even if he arranges the boxes in his intentional order, it makes no sense. Also, Alice puts padlocks $A_O$ on the box in (1), then sends them to Bob, and removes them in (6). If Alice puts the other padlocks on the box from the beginning, she can make a correspondence table of the card in the box. The reason why even if Bob puts padlock on the boxes, Alice can identify the contents of the box depending on which padlock can be removed. It loses fairness, so in order to avoid this, Alice must put the padlocks on the boxes twice in total.</p>
+<h2>Draw</h2>
+<p>Next we will consider is draw. We think that Alice will draw one card from the deck<a href="#fn4" class="footnote-ref" id="fnref4"><sup>4</sup></a>. At the end of the shuffle, we assume that Alice has the deck.</p>
+<ol>
+<li>Alice picks one box $i$ from the deck and teaches the number $i$ to Bob</li>
+<li>Bob sends Alice the key of the padlock $B_i$ that was put on box $i$</li>
+<li>Alice removes the padlock $B_i$ using the key received from Bob in (2)</li>
+<li>Alice removes her padlock $A_i$ from the box $i$ and gets the card inside the box $i$</li>
+</ol>
+<p>By doing this, Alice can draw a card without being known it by Bob.</p>
+<h2>Open</h2>
+<p>When Alice would like to open the card to Bob, Alice just publishes the card to Bob.</p>
+<h2>Verification</h2>
+<p>In order to verify that there is no cheat, Alice and Bob will reveal all the keys of their padlocks and check the contents of all boxes. Also, if Alice and Bob have the hands, that will also be made open. If there is duplication or loss on the card, we know that someone did cheats.</p>
+<h2>Problems of Intuitive Mental Poker</h2>
+<p>Using the protocol, you can do the operations such as shuffle, draw and open but there are some problems. First, in this protocol, players can verify that there is no cheat by opening all the boxes at the end and checking contents inside them. The players also reveal their hands, which can not help making their strategy clear. Therefore it is necessary to verify whether there are cheats or not without revealing players' hands. In addition, there is <a href="http://qiita.com/yyu/items/8d8c82ba729b06b26e67">my article (Japanese)</a> as an example of an implementation of Mental Poker in a mathematical way<a href="#fn5" class="footnote-ref" id="fnref5"><sup>5</sup></a>.</p>
+<h1>Permutation</h1>
+<p>As a preparation before leaning secure grouping protocol, we consider <em>permutations</em>. Note that this section refered <a href="http://sci.kj.yamagata-u.ac.jp/~waki/jpn/GroupText.pdf">the article (Japanese)</a>.</p>
+<h2>Definition and Arithmetic</h2>
+<p>An intuitive explaination of a permutation is <a href="https://en.wikipedia.org/wiki/Ghost_Leg">Amidakuji (Ghost Leg)</a> as follows.</p>
+<div align="center">
+<img width="157" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/c17e3982-1883-b1f5-1caf-2dfc2be29676.png">
+</div>
+<p>The above image means a parmutation that is $1 \rightarrow 3, 2 \rightarrow 1, 3 \rightarrow 2$. I will omit the number of the permutation image as follows.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/7157fa47-ffd3-73ab-7180-ab5c15a0c2a1.png">
+</div>
+<p>Given a finite set $X := {1, 2, \dots, n}$, a bijective mapping $\sigma$ that maps an element $x \in X$ to $y \in X$ is called a <em>$n$th order permutation</em>. The permutation $1 \rightarrow i_1, 2 \rightarrow i_2, \dots n \rightarrow i_n$ is written as follows.</p>
+\[
+  \left(
+    \begin{array}{cccc}
+      1 & 2 & \dots & n \\
+      i_1 & i_2 & \dots & i_n
+    \end{array}
+  \right)
+\]
+<p>We consider two permutations like these.</p>
+<div align="center">
+<img width="653" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/a3dc4c68-6017-e1bd-65e3-ce02278fb20d.png">
+</div>
+<p>We define a <em>product</em> of two permutations $\sigma * \rho$ as follows.</p>
+<p>$$ (\sigma * \rho)(i) := \rho(\sigma(i)) $$</p>
+<p>It means that $\sigma * \rho$ is permuting by $\sigma$ then permuting by $\rho$. So it makes the bellow image.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/3fdb3016-9e88-0a6e-2e9f-48e2f2c86dfb.png">
+</div>
+<p>$\sigma * \rho$ is a permutation that is $1 \rightarrow 2, 2 \rightarrow 1, 3 \rightarrow 3$, it is bijective so $\sigma * \rho$ is also a permutation by the definition. The product of integers, for example, $5 \times 3$ equals to $3 \times 5$, which was changed the order. In the product of permutations, $\rho * \sigma$ that is changed the order from $\sigma * \rho$ is as follows.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/e2236a97-ad9e-4b13-7689-c1ae545b45d5.png">
+</div>
+<p>This permutation is $1 \rightarrow 3, 2 \rightarrow 2, 3 \rightarrow 1$, does not equal to the $\sigma * \rho$. Thus, if we change the order of the product of permutations, it is the other permutation.</p>
+<h2>Identity Element</h2>
+<p>In the product of integer, the following is holds for any integer $x$.</p>
+<p>$$ x \times 1 = 1 \times x = x $$</p>
+<p>An integer $1$ that does not change the original value after multiplied is called the <em>identity element</em> of the integer. Also there is the identity elements in permutations, for example, the following permutation is an identity element of the $3$rd order permutation.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/283e761a-e2a6-6917-709a-f898d5d8edc5.png">
+</div>
+<p>This is a permutation $1 \rightarrow 1, 2 \rightarrow 2, 3 \rightarrow 3$. For all $i \in X$, the permutation $e$ for that $e(i) = i$ holds is called an identity element of the $n$th order permutation. For example, we consider the product of the identity elemnet with the following permutation $\sigma$.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/92cbb753-94cb-0aaa-e564-5beff505aa05.png">
+</div>
+<p>First $e * \sigma$ is as follows.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/687375ff-fb15-53db-e68a-69601d587045.png">
+</div>
+<p>Next $\sigma * e$ is as follows.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/5c1b31ac-60ad-e8af-6f57-75b2e7eaef6c.png">
+</div>
+<p>Thus, both $e * \sigma$ and $\sigma * e$ equals to $\sigma$ so $e$ is an indentity element.</p>
+<h2>Inverse Element</h2>
+<p>In the product of integers, there is the inverse element $\frac{1}{x}$ for any integer $x$ and the following holds.</p>
+<p>$$ x \times \frac{1}{x} = \frac{1}{x} \times x = 1 \def\Inv#1{#1^{-1}} $$</p>
+<p>The product of an integer and its inverse element always equals to $1$ (identity element). Similarly for permutations, we can think a permutation that reverses the permutation. For example, $\sigma$ is the following permutation.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/9b8a3fce-243a-271a-b80b-e9b7bc262ae6.png">
+</div>
+<p>$\sigma$ is a permutation $1 \rightarrow 3, 2 \rightarrow 1, 3 \rightarrow 2$ so the reverse permutation $\rho$ that is $1 \rightarrow 2, 2 \rightarrow 3, 3 \rightarrow 1$ as follows.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/24ddbea0-dbc2-7e0d-4ac9-ea7731bc8514.png">
+</div>
+<p>$\sigma * \rho$ is as follows.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/dc1a7803-6ab7-59fe-2914-a08ed3587021.png">
+</div>
+<p>And $\rho * \sigma$ is as follows.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/15d5a009-2f0c-6c5c-83a8-f0ba6c172786.png">
+</div>
+<p>The both $\sigma * \rho$ and $\rho * \sigma$ is the permutation $1 \rightarrow 1, 2 \rightarrow 2, 3 \rightarrow 3$ so we can see they are identity elements. So $\rho$ that reverses $\sigma$ is called an <em>inverse element</em> of $\sigma$ and we can write $\Inv\sigma$ as the inverse element of $\sigma$. The following always holds true.</p>
+<p>$$ \sigma * \Inv\sigma = \Inv\sigma * \sigma = e $$</p>
+<h2>Cyclic Permutation</h2>
+<p>We consider the following permutation $\sigma$.</p>
+<div align="center">
+<img width="74" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/20744e80-49b4-7700-b939-70e01f0883e8.png">
+</div>
+<p>This permutation is $\sigma$ is $1 \rightarrow 3, 2 \rightarrow 1, 3 \rightarrow 2$ and this transfers the number cyclically like $1 \rightarrow 3 \rightarrow 2 \rightarrow 1 \rightarrow 3 \rightarrow 2 \cdots$. A permutation such a $\sigma$ is called a <em>cyclic permutation</em> and we write it as $(1, 3, 2)$. Strictly speaking, when a permutation $\sigma$ transfers the $k$ numbers $a_1, a_2, \dots, a_k\, (1 \le k \le n)$ as long as $a_1$ is the minimum among $a_1, a_2, \dots, a_k$ to $\sigma(a_1) = a_2, \sigma(a_2) = a_3, \dots, \sigma(a_{n-1}) = a_n, \sigma(a_n) = a_1$ cyclically and it does not transfer other numbers, $\sigma$ is called a size $k$ cyclic permutation and it is written $(a_1, a_2, \dots, a_k)$. We consider a slightly larger permutation $\sigma$ such as the following.</p>
+<div align="center">
+<img width="146" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/9289f925-1f52-7836-d92a-f64d9d4ae3cc.png">
+</div>
+<p>This permutation can be expressed by the product of a cyclic permutation $(1, 2, 3)$ and a cyclic permutation $(4, 5)$. So we can write $\sigma$ as follows.</p>
+<p>$$ \sigma = (1, 2, 3)(4, 5) $$</p>
+<p>An arbitrary permutation can be expressed by the product of cyclic permutation which does not contain the same number. Also, a cyclic permutation that does not contain the same number are called <em>disjoint</em> cyclic permutation.</p>
+<h2>Type</h2>
+<p>When a permutation $\tau$ is the product of some disjoint cyclic permutations, $\tau$ has a <em>type</em> $\left&lt;r_1^{m_1}, r_2^{m_2}, \dots, r_k^{m_k}\right&gt;$ where the number of size $r_i$ cyclic permutationfor is $m_i$ for each $i := 1, 2, \dots k$. For example, a permutation $\tau := (1, 2)(3, 4, 5)$ is as follows.</p>
+<div align="center">
+<img width="146" alt="image.png" src="https://qiita-image-store.s3.amazonaws.com/0/10815/5ab0a1d7-2179-b636-abee-1c30a720bb11.png">
+</div>
+<p>$\tau$ has the type $\left&lt;2^1, 3^1\right&gt;$.</p>
+<h2>Conjugated Permutation</h2>
+<p>For permutations $\tau$ and $\sigma$, $\Inv\sigma \tau \sigma$ is called <em>conjugated permutation</em><a href="#fn6" class="footnote-ref" id="fnref6"><sup>6</sup></a>. We consider what are the characteristics of conjugated permutations. For example, there are two permutations: $\tau := (1, 3, 2)$ and the the following permutation $\sigma$ where $i_1, i_2, i_3$ are choosen from $1, 2, 3$ as not to overlap.</p>
+\[
+\begin{align}
+\sigma := \left(
+    \begin{array}{ccc}
+      1 & 2 & 3 \\
+      i_1 & i_2 & i_3
+    \end{array}
+  \right)
+\end{align}
+\]
+<p>The conjugated permutation $\Inv\sigma \tau \sigma$ is as follows.</p>
+\[
+\begin{align}
+  \Inv{\left(
+    \begin{array}{ccc}
+      1 & 2 & 3 \\
+      i_1 & i_2 & i_3
+    \end{array}
+  \right)} (1, 3, 2) \left(
+    \begin{array}{ccc}
+      1 & 2 & 3 \\
+      i_1 & i_2 & i_3
+    \end{array} 
+  \right) &= \left(
+    \begin{array}{ccc}
+      i_1 & i_2 & i_3 \\
+      1 & 2 & 3
+    \end{array}
+  \right) (1, 3, 2) \left(
+    \begin{array}{ccc}
+      1 & 2 & 3 \\
+      i_1 & i_2 & i_3
+    \end{array} 
+  \right) \\
+  &= \left(
+    \begin{array}{ccc}
+      i_1 & i_2 & i_3 \\
+      1 & 2 & 3
+    \end{array}
+  \right)
+  \left(
+    \begin{array}{ccc}
+      1 & 2 & 3 \\
+      i_3 & i_1 & i_2
+    \end{array} 
+  \right) \\
+  &= \left(
+    \begin{array}{ccc}
+      i_1 & i_2 & i_3 \\
+      i_3 & i_1 & i_2
+    \end{array} 
+  \right) \\
+  &= (i_1, i_3, i_2)
+\end{align}
+\]
+<p>The conjugated permutation $\Inv\sigma \tau \sigma$ is a permutation whose type equals to $\tau$ because $i_1, i_2, i_3$ are choosen from $1, 2, 3$ as not to overlap. Next we consider $\Inv\sigma \tau^2 \sigma$ using $\tau^2 = \tau * \tau = (1, 2, 3)$.</p>
+\[
+\begin{align}
+  \Inv{\left(
+    \begin{array}{ccc}
+      1 & 2 & 3 \\
+      i_1 & i_2 & i_3
+    \end{array}
+  \right)} (1, 2, 3) \left(
+    \begin{array}{ccc}
+      1 & 2 & 3 \\
+      i_1 & i_2 & i_3
+    \end{array} 
+  \right)
+  &= \left(
+    \begin{array}{ccc}
+      i_1 & i_2 & i_3 \\
+      i_2 & i_3 & i_1
+    \end{array} 
+  \right) \\
+  &= (i_1, i_2, i_3)
+\end{align}
+\]
+<p>If we fix the values of $i_1, i_2, i_3$, we get another cyclic permutation. Since $\tau^3 = \tau * \tau * \tau = e$, $\Inv\sigma \tau^3 \sigma$ equals to $e$. In the same way, $\Inv\sigma \tau^4 \sigma = \Inv\sigma \tau \sigma = (i_1, i_3, i_2)$ because of $\tau^4 = \tau$. In summary it will be shown in the following table.</p>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: center;">Conjugated Permutation</th>
+<th style="text-align: center;">equals to</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: center;">$\Inv\sigma \tau \sigma$</td>
+<td style="text-align: center;">$(i_1, i_3, i_2)$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$\Inv\sigma \tau^2 \sigma$</td>
+<td style="text-align: center;">$(i_1, i_2, i_3)$</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;">$\Inv\sigma \tau^3 \sigma$</td>
+<td style="text-align: center;">$e$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$\Inv\sigma \tau^4 \sigma$</td>
+<td style="text-align: center;">$(i_1, i_3, i_2)$</td>
+</tr>
+</tbody>
+</table>
+<p>Considering the permutation $\Inv\sigma \tau \sigma$ and its exponentiation, we can see that the permutation is changing at the regular intervals. We use this at secure grouping protocol.</p>
+<h1>Secure Grouping Protocol</h1>
+<p>The <em>secure grouping protocol</em> was proposed in <a href="https://ipsj.ixsq.nii.ac.jp/ej/?action=pages_view_main&amp;active_action=repository_view_main_item_detail&amp;item_id=175767&amp;item_no=1&amp;page_id=13&amp;block_id=8">this paper (Japanese)</a>. The feature of this protocol is that a fair third-party is unnecessary and when players are divided into three or more groups, the players who belong to a group can know who belongs to the same group. On the other hand, they do not know which group the other players belong to. In this section, I first explain the <em>number cards</em>, which are needed to make this protocol, then define the <em>Pile-Scramble Shuffle</em> and finally construct the protocol.</p>
+<h2>Number Cards</h2>
+<p>In this protocol, we use <em>number cards</em><a href="#fn7" class="footnote-ref" id="fnref7"><sup>7</sup></a> which are printed with the following number.</p>
+<p>$$ \def\card#1{\boxed{\vphantom{1}#1\,}} \card{1}\,\card{2}\,\card{3}\,\card{4} \cdots \card{n} $$</p>
+<p>The back of the cards are $\card{?}$ so all players can not distinguish between cards on the back and can not guess the numbers of the card turned over. We write the order of the cards using the permutation $x$ as follows.</p>
+<p>$$ \card{?}\, \card{?} \cdots \card{?}\, (x) $$</p>
+<p>If the cards are sorted in numerical order, we write as follows using $id$ specially.</p>
+<p>$$ \card{1}\, \card{2} \cdots \card{N}\, id $$</p>
+<h2>Pile-Scramble Shuffle</h2>
+<p>I will talk about <em>Pile-Scramble Shuffle</em>. This is an operation to choose one permutation with uniform probability from all permutations and apply it for the cards' order.</p>
+<p>$$ \def\pss{\left\lvert\Big\lvert \card{?} \middle\vert \card{?} \middle\vert \cdots \middle\vert \card{?} \Big\rvert\right\rvert} \pss\, (x) \rightarrow \card{?}\, \card{?} \cdots \card{?}\, (rx) $$</p>
+<p>This indicates that we choose a permutation $r$ at random and apply it for the cards sorted by permutation $x$. Intuitively speaking, we just shuffle the cards.</p>
+<h2>Randomizing Permutation</h2>
+<p>We define an operation to randomly select a permutation $\rho$ that has the same type as a certain permutation $\tau$. Intuitively, it is similar to insert a new random horizontal line into an Amidakuji. We can insert a new line to the place where there is horizontal line between the vertical lines but we can not insert a new line the place where there is no horizontal line. By this way, we can randomly generate a permutation that has the same type.</p>
+<ol>
+<li><p>Prepare two rows of cards in the numerical order and turn over the cards</p>
+\[
+\def\twopair#1#2{%
+ \begin{matrix}
+  #1 \\
+  #2
+ \end{matrix}
+}
+\def\twocards#1#2{\twopair{\card{#1}}{\card{#2}}}
+\def\twopss#1#2{\left\lvert\left\lvert \twocards{?}{?} \middle\vert \twocards{?}{?} \middle\vert \cdots \middle\vert \twocards{?}{?} \right\rvert\right\rvert \twopair{(#1)}{(#2)}}
+\card{1}\,\card{2} \cdots \card{n} \rightarrow \card{?}\,\card{?} \cdots \card{?} \\
+\card{1}\,\card{2} \cdots \card{n} \rightarrow \card{?}\,\card{?} \cdots \card{?}
+\]</li>
+<li><p>Apply a Pile-Scramble Shuffle two rows cards together</p>
+\[
+\twopss{id}{id} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(\sigma)}{(\sigma)}
+\]</li>
+<li><p>Apply an arbitrary permutation $\tau$ to the below cards row</p>
+\[
+\twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(\sigma)}{(\sigma)} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(\sigma)}{(\tau\sigma)}
+\]</li>
+<li><p>Apply a Pile-Scramble Shuffle two rows cards together again</p>
+\[
+\twopss{\sigma}{\tau\sigma} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(r\sigma)}{(r\tau\sigma)}
+\]</li>
+<li><p>Open the above cards row and sort the up and down cards pair in order that is above cards are sorted. As a result, the below row is applied with the permutation that is $(r\sigma)^{-1} = \sigma^{-1}r^{-1}$. Finally get a cards row that $\sigma^{-1}r^{-1}r\tau\sigma = \sigma^{-1}\tau\sigma$ (where $i_1, \dots, i_n$ is arbitrarily chosen from $1$ to $n$ that do not overlap)</p>
+\[
+\twocards{i_1}{?}\, \twocards{i_2}{?} \cdots \twocards{i_n}{?} \twopair{r\sigma}{(r\tau\sigma)} \rightarrow \twocards{1}{?}\, \twocards{2}{?} \cdots \twocards{n}{?} \twopair{id}{(\sigma^{-1}r^{-1}r\tau\sigma)} = \twocards{1}{?}\, \twocards{2}{?} \cdots \twocards{n}{?} \twopair{id}{(\sigma^{-1}\tau\sigma)} 
+\]</li>
+<li><p>Let the generated cards row $\sigma^{-1}\tau\sigma$ be $\rho$</p>
+\[
+\rho := \card{?}\, \card{?} \cdots \card{?}\, (\sigma^{-1}\tau\sigma)
+\]</li>
+</ol>
+<h2>Protocol</h2>
+<p>We will see the secure grouping protocol. We consider first that there are $n$ players and group them into $m$ groups $A_1, A_2, \dots, A_m$. There are $m_i$ groups with $r_i$ people where $i := 1, 2, \dots, k$, then ﻿﻿﻿﻿﻿﻿$n = \sum_{i=1}^{k}m_ir_i$ and $m = \sum_{i=1}^{k}m_i$ hold. Note that we use $2r(n + m)$ cards for the sum of $2r$ cards from $1$ to $n + m$. We assign $1 \dots n$ cards to player $1 \dots n$ and cards from $n + 1 \dots n + m$ to groups $A_1 \dots A_m$. It is summarized the following table.</p>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: center;">Number of card</th>
+<th style="text-align: center;">is assigned</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: center;">$1$</td>
+<td style="text-align: center;">Player $1$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$\vdots$</td>
+<td style="text-align: center;">$\vdots$</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;">$n$</td>
+<td style="text-align: center;">Player $n$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$n + 1$</td>
+<td style="text-align: center;">Group $A_1$</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;">$\vdots$</td>
+<td style="text-align: center;">$\vdots$</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$n + m$</td>
+<td style="text-align: center;">Group $A_m$</td>
+</tr>
+</tbody>
+</table>
+<p>The protocol is as follows.</p>
+<ol>
+<li>Choose a permutation $\tau$ which has the type $\left&lt; (r_1 + 1)^{m_1}, (r_2 + 1)^{m_2}, \dots, (r_k + 1)^{m_k}\right &gt;$ where $\tau$ is a product of cyclic permutations each cyclic permutation includes a number that indicates a group</li>
+<li>Create $2r$ permutations $\sigma$ to be used for randomization once where $r := \text{max}(r_1, \dots, r_k)$. When creating $\sigma$, apply Pile-Scramble Shuffle only for the cards from the $1$st to the $n$th</li>
+<li>Create $\rho = \Inv\sigma \tau \sigma$ using $\sigma$ in (2). We can also create $\rho^2$ from $\tau^2$ using the same $\sigma $, so we also create $\rho^2, \dots, \rho^r$</li>
+<li>Player $i$ draws $i$th cards one by one from the left of the cards row $\rho, \rho^2, \dots, \rho^r$. Each player gets one card indicating a group and cards indicating all other members of the same group</li>
+</ol>
+<p>Since the secure grouping protocol consists of shuffle, draw and open, it can be done by Mental Poker. Note that <a href="https://github.com/y-yu/sgp">this GitHub Repository</a> is an implementation of secure grouping protocol.</p>
+<h1>Voting</h1>
+<p>It is necessary to vote for playing Werewolf. In this section we consider the protocol to decide the choice that is a majority among several choices without a fair third-party. we need to vote in the follwing cases.</p>
+<ul>
+<li>When all players decide a player to execute</li>
+<li>When werewolves decide a villager to kill</li>
+</ul>
+<p>We can vote with number cards, and we can also be done voting using Mental Poker's shuffle, draw and open.</p>
+<h2>Protocol</h2>
+<p>We assume that the voters are $n$ people up to $1, 2, \dots, n$, and each voter choose one from $1, 2, \dots, m$ options.</p>
+<ol>
+<li><p>A voter $i$ two rows of cards $1$ to $m$ in the numerical order and turn over the cards</p>
+\[
+\card{1}\,\card{2} \cdots \card{m} \rightarrow \card{?}\,\card{?} \cdots \card{?} \\
+\card{1}\,\card{2} \cdots \card{m} \rightarrow \card{?}\,\card{?} \cdots \card{?}
+\]</li>
+<li><p>A voter $i$ applies Pile-Scramble Shuffle to both rows of cards</p>
+\[
+\twopss{id}{id} \rightarrow \twocards{?}{?}\, \twocards{?}{?} \cdots \twocards{?}{?} \twopair{(r)}{(r)}
+\]</li>
+<li>A voter $i$ draws all of the above cards rows. And they put $k$ that they want to vote at the left end</li>
+<li><p>The voter $1$ gathers all the cards on the left end of the voter's $i$ card line (a voter $1$ is selected at random, so any player can do this)</p>
+`<code>math  \card{?}\, \card{?} \cdots \card{?}</code></li>
+<li>The voter $1$ applies Pile-Scramble Shuffle to the $n$ cards that are collected in (4)</li>
+<li>The voter $1$ opens all cards shuffled by (5)</li>
+<li><p>All players count the number of the same number cards opened in (6) and determine the max number</p></li>
+</ol>
+<p>When running this protocol using Mental Poker, we have to be able to shuffle the shuffled deck again. This is called <em>reshuffle</em>, and there is research on Mental Poker which can reshuffle. In the intuitive explanation of reshuffle, we repeat shuffling the box and sending it to the next player without putting padlocks.</p>
+<h1>Werewolf using Mental Poker</h1>
+<p>Then we will finally make up Werewolf using Mental Poker.</p>
+<ol>
+<li>All players use the secure grouping protocol to divide $n$ players into $m$ werewolves and $l$ villagers (However, villagers must not be able to distinguish whether other players are villagers or werewolves, so we make $l$ groups which $1$ person belongs to)</li>
+<li>In the night, werewolves decide a villager to kill using voting (since werewolves can determine that a player who is a villager or werewolf)</li>
+</ol>
+<ul>
+<li>One of the werewolves notifies the villager to be killed, then the villager who were killed leaves the game</li>
+<li>When the night is over, if any villager is not killed, the villagers win immediately (it means all the werewolves are executed)</li>
+</ul>
+<ol>
+<li>In the daytime, all players vote and decide who will be executed</li>
+</ol>
+<ul>
+<li>The executed player leaves the game</li>
+</ul>
+<ol>
+<li>All players repeat (2) and (3) alternately</li>
+<li>Werewolves can declare to win if the number of werewolves is equal to or greater than the number of villagers. If a werewolf declares to win, all players who have not died reveal a number card that indicates their group and they count the number of werewolves and villagers in the game. If the number of werewolves equals to or greater than the number of villagers, it means a win of werewolves and if the number of villagers is greater than the number of werewolves, it means villagers win.</li>
+</ol>
+<h1>Conclusion</h1>
+<p>We see that we can play complicated games like Werewolf which seemed to be impossible with Mental Poker. Mental Poker can be implemented by some programming languages, so we able to play Werewolf on the computer without a fair third-party. However, there are some issues. When a villager is killed and removed from the game, they know that a player who notified is a werewolf. If a villager can not know who the player notified them, this Werewolf game is more similar to Werewolf with a moderator. Also, in this Werewolf, the judgment of win of the werewolf side is different from Werewolf with a moderator. We have to decide to win by how werewolves declare to win or no villager is killed at night. So there are more options to take disadvantageous actions against the sides which the player belongs to, for example, a werewolf player declare to win despite not winning. We can play the game correctly under assuming that “all players do not take disadvantageous actions to the side which they belong to”. But we may need to improve this. As a further discussion, there are some rules that added various roles besides the villager and the werewolf, so it is a future work to deal with that.</p>
+<p>Thank you for reading this article. Your comments, problem reports and questions are very welcome!</p>
+<h1>References</h1>
+<ul>
+<li><a href="https://arxiv.org/abs/1709.07785">Secure Grouping Protocol Using a Deck of Cards</a></li>
+<li><a href="https://ipsj.ixsq.nii.ac.jp/ej/?action=pages_view_main&amp;active_action=repository_view_main_item_detail&amp;item_id=175767&amp;item_no=1&amp;page_id=13&amp;block_id=8">Secure Grouping Protocol Using Cards (Japanese)</a></li>
+<li><a href="http://qiita.com/yyu/items/8d8c82ba729b06b26e67">A TTP-free mental poker protocol achieving player confidentiality (Japanese)</a></li>
+<li><a href="http://www.tdx.cat/bitstream/handle/10803/5804/jcr1de1.pdf">Contribution to Mental Poker</a></li>
+<li><a href="http://sci.kj.yamagata-u.ac.jp/~waki/jpn/GroupText.pdf">Text for Group (Japanese)</a></li>
+<li><a href="https://github.com/y-yu/sgp">Python implementation of Secure Grouping Protocol (GitHub)</a></li>
+<li><a href="https://gumroad.com/l/uqxsS">urandom vol.3 (Japanese)</a></li>
+<li><a href="http://qiita.com/yyu/items/278515cee86246e53380">Japanese version</a></li>
+</ul>
+<h1>Contacts</h1>
+<ul>
+<li>Twitter: <a href="https://twitter.com/_yyu_">@_yyu_</a></li>
+<li>Email: <a href="mailto:yyu@mental.poker">yyu@mental.poker</a></li>
+<li>GitHub: <a href="https://github.com/y-yu">y-yu</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>A fair third-party means a person like a judge who is guaranteed to behave similarly for all players in the game.<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>This article does not require knowledges about RSA cryptography.<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p>In Werewolf game, a fair third-party is called <em>moderator</em>.<a href="#fnref3" class="footnote-back">↩</a></p></li>
+<li id="fn4"><p>A deck means all boxes after shuffling we talked earlier.<a href="#fnref4" class="footnote-back">↩</a></p></li>
+<li id="fn5"><p>For efficiency, this intuitive explanation has not been implemented as it is.<a href="#fnref5" class="footnote-back">↩</a></p></li>
+<li id="fn6"><p>We may omit $<em>$, $\Inv\sigma \tau \sigma$ means $\Inv\sigma </em> \tau * \sigma$.<a href="#fnref6" class="footnote-back">↩</a></p></li>
+<li id="fn7"><p>If I write <em>card(s)</em> hereafter, it means implicitly number card(s) to simplify.<a href="#fnref7" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

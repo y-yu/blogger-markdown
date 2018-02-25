@@ -1,0 +1,167 @@
+<p>TeXの処理系は他のプログラム言語とはスペースや改行の扱い方が異なるらしいが、それをよく理解しないままTeXのマクロなどを記述していた。そこで改めてTeXが改行やスペースをどのように扱うのかについて、<a href="ftp://ftp.kddilabs.jp/CTAN/info/texbytopic/TeXbyTopic.pdf">TeX by Topic</a>のChapter1, 2あたりを読むなどして分かったこと書くことにする。 TeX by Topicは和文組版でよく用いられるpTeX系の内部に関しては述べられていない。そこで和文に関しては<a href="http://git.sourceforge.jp/view?p=luatex-ja/luatexja.git;a=blob_plain;f=doc/luatexja-ja.pdf;hb=HEAD">LuaTeX-jaのドキュメント</a>を参考にした。</p>
+<h1>改行とスペース</h1>
+<p>そもそもどのようなことを問題としているのかというだが、例えば次のようなものを何かTeXの処理系でコンパイルすることを考える。</p>
+<pre><code class="tex">This is a pen.
+I like it.</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/c7c3914d-de11-9e38-f3bf-8b2560a0012d.png" alt="スクリーンショット 2014-01-07 16.43.36.png" /></p>
+<p>よく見ると、一行目の <em>pen.</em> と二行目の <em>I like</em> の間にあった改行が、スペースへ化けたと分かる。 また次のように、</p>
+<pre><code class="tex">This is         a         pen.</code></pre>
+<p>などと、大量のスペースを注入したとしても、</p>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/4658deb5-b7dc-d056-191a-ee7b8528875c.png" alt="スクリーンショット 2014-01-04 17.43.19.png" /></p>
+<p>という感じで、一部のスペースは無視される。 このように、TeXは記述したスペースや改行が全て無視されるというわけでもなければ、全て成果物に表われるというわけでもない。</p>
+<h1>TeXの入力処理</h1>
+<p>TeX by TopicではTeXの入力処理は <strong>有限オートマトン</strong> であるとしている。ただしTeX by Topicは和文組版について全く述べられていないので、ここではLuaTeX-jaのドキュメントを参考に、pTeX系のオートマトンを述べることにした。</p>
+<h2>アルファベット</h2>
+<p>TeXは入力される文字を一文字ずつ、カテゴリーコードという文字に割り当てられた数字によって分類する。カテゴリーコードについては<a href="http://oku.edu.mie-u.ac.jp/~okumura/texwiki/?TeX%E5%85%A5%E9%96%80%2F%E3%83%9E%E3%82%AF%E3%83%AD%E3%81%AE%E4%BD%9C%E6%88%90">TeX Wiki</a>などに詳細（？）がある。</p>
+<p>ただ、TeXの状態遷移を表わすのであれば、とりあえず次のように分類すればことが足りると思う。なのでアルファベット（記号）を次のようにする。</p>
+<ul>
+<li><code>\</code>：バックスラッシュ</li>
+<li><code>　</code>：半角スペース</li>
+<li><code>\n</code>：改行記号</li>
+<li><code>%</code>：コメント文字</li>
+<li><code>C</code>：半角英字（a-z, A-Z）</li>
+<li><code>G</code>：グループの開始と終了（<code>{</code>, <code>}</code>）</li>
+<li><code>O</code>：<code>\</code>, <code>　</code>, <code>\n</code>, <code>%</code>以外の半角文字</li>
+<li><code>J</code>：日本語文字（あ、イ、宇……）</li>
+</ul>
+<h2>5つの状態</h2>
+<p>pTeXは次の5つの状態を持つ。（TeX by Topicでは状態 <em>CS</em> は書かれていないが、こちらの説明がやりやすいと思うので追加した。）</p>
+<dl>
+  <dt>状態 <em>N</em>：新規行</dt>
+  <dd>TeXが始まった時、または何らかの状態から、<code>\n</code>によって新しい行が始まった時の状態</dd>
+  <dt>状態 <em>K</em>：和文の行中</dt>
+  <dd>何らかの状態から、日本語文字<code>J</code>が出現した時の状態（pTeX系にのみ存在）</dd>
+  <dt>状態 <em>M</em>：英文の行中</dt>
+  <dd>何らかの状態から文字<code>C</code>, <code>O</code>が出現した時の状態</dd>
+  <dt>状態 <em>S</em>：スキップスペース</dt>
+  <dd>何らかの状態からスペース<code>　</code>の出現などによって、以降のスペースを読み飛ばす時の状態</dd>
+  <dt>状態 <em>CS</em>：コントロールシークエンス</dt>
+  <dd>何らかの状態から<code>\</code>の出現によって、コントロールシークエンス（マクロなど）を構成する時の状態</dd>
+</dl>
+<p>TeXソースコードにおけるスペースや改行は、このオートマトンの状態によって処理が変わる。</p>
+<h2>状態遷移と改行などの扱い</h2>
+<p>各状態と、その状態によって改行やスペースがどのように扱われるのか述べる。</p>
+<h3>状態 <em>N</em> ：新規行</h3>
+<p>TeXはこの状態から始まり、新しい行へ入った際にこの状態へ遷移する。この状態では、</p>
+<ul>
+<li>全てのスペース<code>　</code>が無視される</li>
+<li>改行<code>\n</code>を行うと改段落<code>\par</code>が挿入される</li>
+</ul>
+<h3>状態 <em>K</em> ：和文の行中</h3>
+<p>何か和文文字<code>J</code>が出現した際にこの状態へ遷移する。この状態では、</p>
+<ul>
+<li>スペース<code>　</code>が出現すると、スペースを表示して状態 <em>S</em> へ遷移する</li>
+<li>改行<code>\n</code>があると、何も出力せずに状態 <em>N</em> へ遷移する</li>
+</ul>
+<p>つまり、スペースは表示され、改行は状態を遷移させるだけで表示に影響は与えない。例えば次のような文章を与える。</p>
+<pre><code class="tex">スペース の        テスト
+改行したが、前の行に書いた文字との間に
+スペースはない。</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/a606f103-8f90-5679-20d1-39d74b69a24f.png" alt="スクリーンショット 2014-01-05 17.12.23.png" /></p>
+<p>最初の行はよく見ると「の」の前後にスペースが挿入されているが、たくさんスペースを連続して書いても、状態 <em>S</em> へ遷移してスペースを読み飛ばすので、「の」と「テスト」の間に大量の隙間が出来ることはない。 また、状態 <em>K</em> においてはグループ文字<code>G</code>が表われても状態 <em>M</em> へ遷移しない。なので、</p>
+<pre><code class="tex">グループを開始させて改行し{
+直後にグループを閉じて}
+さらに改行した。</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/e7426668-4883-e993-ac19-45e32cce4a65.png" alt="スクリーンショット 2014-01-05 20.12.09.png" /></p>
+<p>としても、改行の部分にスペースが挿入されない。</p>
+<h3>状態 <em>M</em> ：英文の行中</h3>
+<p>英字<code>C</code>の他に、例えば<code>{</code>, <code>}</code>といったグループに関する文字や、数字などによって状態 <em>M</em> へ遷移する。 &quot;This is a pen.&quot;の例で挙げたように、英文の場合は和文と異なり改行によってスペースが挿入される。</p>
+<ul>
+<li>スペース<code>　</code>が出現すると、スペースを表示して状態 <em>S</em> へ遷移する</li>
+<li>改行<code>\n</code>があると、スペースを表示して状態 <em>N</em> へ遷移する</li>
+</ul>
+<p>従って、例えば次のような記述では、</p>
+<pre><code class="tex">This is a pen,{
+I like it}
+very much.</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/32e91682-4161-7a53-dd7c-451d1aa16801.png" alt="スクリーンショット 2014-01-05 20.18.14.png" /></p>
+<p>などと、改行の度にスペースが挿入される。</p>
+<p>ただこの時にコメント文字<code>%</code>が出現して次のようになった場合を考える。</p>
+<pre><code class="tex">This is a pen.%
+I like it.</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/86040b92-1e08-e4c7-2164-e6a1bdcb0a2c.png" alt="スクリーンショット 2014-01-06 1.09.04.png" /></p>
+<p>このように<code>%</code>が出現した後改行した場合、その後に改行<code>\n</code>があったとしてもコメントアウトされているものとされる。従って改行によるスペースの挿入も行われず、状態 <em>M</em> のまま次の行を処理する。従ってスペースの挿入などが行われない。</p>
+<h3>状態 <em>S</em> ：スキップスペース</h3>
+<p>次のような時に状態 <em>S</em> へ遷移する。</p>
+<ul>
+<li>スペース<code>　</code>の後</li>
+<li>状態 <em>CS</em> の後（一部例外あり）</li>
+</ul>
+<p>この状態の時、スペースと改行は次のようになる。</p>
+<ul>
+<li>スペース<code>　</code>を無視する（何も表示せず、状態もそのまま）</li>
+<li>改行<code>\n</code>があると、何もせず状態 <em>N</em> へ遷移する</li>
+</ul>
+<p>つまりこの状態においては、連続するスペースが全て無視される。</p>
+<h3>状態 <em>CS</em> ：コントロールシークエンス</h3>
+<p>文字<code>\</code>の後にこの状態へと遷移する。TeX by Topicにはコントロールシークエンス（ <em>control sequence</em> ）として、次の2つを全てまとめたものであると述べている。</p>
+<dl>
+  <dt>コントロールシンボル（<em>control symbol</em>）</dt>
+  <dd><code>\</code>の後に、英字以外の一字<code>,</code>や<code>%</code>などが続くもの</dd>
+  <dt>コントロールワード（<em>control word</em>）</dt>
+  <dd><code>\</code>の後に、英字<code>C</code>あるいは日本語文字<code>J</code>が一字以上続くもの</dd>
+</dl>
+<p>つまり、<code>\small</code>といったものはコントロールワードであり、<code>\%</code>や<code>\,</code>がコントロールシンボルとなる。状態 <em>CS</em> はこの二つで動作が異なる。</p>
+<h4>コントロールシンボル</h4>
+<p><code>\</code>の後に<code>C</code>以外のものが続くもの場合は、その一字を読んだ後状態 <em>M</em> へ遷移する。例えば次のようなものを考える。</p>
+<pre><code class="tex">コントロールシンボル\%
+の直後に改行を入れる。</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/7c106629-cf40-a471-0b53-947f0272e863.png" alt="スクリーンショット 2014-01-05 20.49.34.png" /></p>
+<p>このように<code>%</code>記号の直後に半角スペースが挿入されていることから、状態 <em>M</em> へ遷移したことが分かる。（分かりやすくするためスペースの部分に色を付けた。）</p>
+<p>ただし例外があり、<code>\　</code>（<code>\</code>+半角スペース、コントロールスペースと呼ばれる）の場合は状態 <em>S</em> へ遷移する。</p>
+<h4>コントロールワード</h4>
+<p>コントロールワードの場合は、<code>\</code>に続く英字<code>C</code>あるいは日本語文字<code>J</code>を全て読んだ後に状態 <em>S</em> へ遷移する。従って、</p>
+<ul>
+<li>コントロールワードの後にあるスペースは無視される</li>
+<li>コントロールワードの直後にある改行は何も表示せず、状態を <em>N</em> へ遷移させる</li>
+</ul>
+<p>となる。例えば次のようにコントロールワードの直後にいくつかのスペースを挿入する。</p>
+<pre><code class="tex">\def\hoge{ほげ}
+
+コントロールワード\hoge         % 大量のスペース
+の直後に大量のスペースを入れる。</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/8eeca541-c031-53bc-cb68-621ff6019fd5.png" alt="スクリーンショット 2014-01-05 21.00.12.png" /></p>
+<p>このように<code>\hoge</code>の後に入れたスペースは表示されない。</p>
+<h2>引数を取るコントロールワード</h2>
+<p>コントロールワードの中には、次のように引数を取るものがある。</p>
+<pre><code class="tex">\def\hoge#1{（#1）が吸い込まれた}
+
+\hoge       の直後にはスペースが入っている。</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/5d740c0f-901a-8d05-4c09-855337eb0a35.png" alt="スクリーンショット 2014-01-05 23.36.02.png" /></p>
+<p>図の通り、<code>\hoge</code>の直後にある大量のスペースは状態 <em>CS</em> で<code>\hoge</code>を処理した直後に状態 <em>S</em> へと遷移し、そこでスペースは消滅した。その後に引数の処理を行ったためスペースの直後にある「の」が引数となった。 また、境界なしの場合は引数と引数の間にある全てのスペースや改行が無視される。</p>
+<p>ただし、コントロールワードが引数を取る際は、コントロールワードがどのように引数を取るかによって、スペースなどの処理が分かれる。</p>
+<dl>
+  <dt>境界なし引数（Undelimited parameters）</dt>
+  <dd><code>\def\hoge#1#2{...}</code>のように、引数と引数の間に境界を明示しない</dd>
+  <dt>境界あり引数（Delimited parameters）</dt>
+  <dd><code>\def\hoge#1, #2{...}</code>のように、引数と引数の間に境界となる文字列を明示する</dd>
+</dl>
+<h3>境界なし引数</h3>
+<p>まずは境界なし引数の場合は、コントロールワードの直後にあるスペースと改行が状態 <em>S</em> によって無視され、その後引数の確保になる。</p>
+<pre><code class="tex">\def\hoge#1#2{（#1,#2）が吸い込まれた}
+
+\hoge
+  A
+  B
+という感じ。</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/8053cd26-0f0e-78d4-fe6d-b9487b53e863.png" alt="スクリーンショット 2014-01-07 16.15.50.png" /></p>
+<p>このように、 &quot;A&quot;の後にある改行や状態 <em>M</em> による改行で挿入されるスペースは無視されているが、&quot;B&quot;の後にある改行（状態 <em>M</em> における改行で挿入されるスペース）は残っている。つまり、引数と引数の間に境界がない場合、引数の間にあるスペースや改行は無視される。</p>
+<h3>境界あり引数</h3>
+<p>ここで、境界となる文字列を明示すると次のようになる。</p>
+<pre><code class="tex">\def\hoge#1,#2and#3{（#1,#2,#3）が吸い込まれた}
+
+\hoge A , B and C
+という感じ。</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/4886d864-f0bc-e164-36ad-2a2e01297eb7.png" alt="スクリーンショット 2014-01-07 16.19.12.png" /></p>
+<p>このように境界文字列で挟まれた部分についてはスペースなどが無視されない。（ただ、スペースによって状態が <em>S</em> へ遷移するので連続するスペースは一つ分になるなどする）</p>
+<h1>まとめ</h1>
+<p>結論としては、</p>
+<ul>
+<li>状態 <em>M</em> の時に改行するとスペースが挿入される可能性がある</li>
+</ul>
+<p>ということになる。なので、</p>
+<ul>
+<li>和文（状態 <em>K</em> ）の改行は無視される</li>
+<li>コントロールワードの直後にあるスペースや改行は無視される</li>
+<li>コントロールワードの引数は、境界を明示しているのかどうかで振る舞いが違うが、場合によっては改行によるスペースなどが入る可能性がある</li>
+</ul>

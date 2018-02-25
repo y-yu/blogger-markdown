@@ -1,0 +1,148 @@
+<h1>はじめに</h1>
+<p><a href="https://www.playframework.com/">Play Framework</a>にはcase classからJSONへ変換するためのインスタンスを自動で作るマクロがある。一方でなんらかの型をXMLへ変換する機能はない。そこでこの記事では、まずPlayがどのようにcase classをJSONへ変換しているのかを軽く解説してそれのXML版を作り、最後にScalaのマクロを用いてcase classからXMLを生成するためのインスタンスを自動生成する。</p>
+<h1>Playが型<code>A</code>をJSONへ変換するとき</h1>
+<p>Playが型<code>A</code>をJSONへ変換する際には<code>Writes[A]</code>という<a href="http://halcat.org/slide/functional_scala/#/">型クラス</a>のインスタンスを要求する。この<code>Writes</code>は次のような型クラスになっている。</p>
+<blockquote>
+<p><a href="https://github.com/playframework/playframework/blob/master/framework/src/play-json/src/main/scala/play/api/libs/json/Writes.scala" class="uri">https://github.com/playframework/playframework/blob/master/framework/src/play-json/src/main/scala/play/api/libs/json/Writes.scala</a></p>
+</blockquote>
+<pre><code class="scala">trait Writes[-A] {
+  /**
+   * Convert the object into a JsValue
+   */
+  def writes(o: A): JsValue
+
+  /**
+   * Transforms the resulting [[JsValue]] using transformer function
+   */
+  def transform(transformer: JsValue => JsValue): Writes[A] = Writes[A] { a => transformer(this.writes(a)) }
+
+  /**
+   * Transforms resulting [[JsValue]] using Writes[JsValue]
+   */
+  def transform(transformer: Writes[JsValue]): Writes[A] = Writes[A] { a => transformer.writes(this.writes(a)) }
+}</code></pre>
+<p><code>transform</code>は<code>writes</code>から作られているので、ひとまずここでは無視すると、型クラス<code>Writes[A]</code>のインスタンスは次のようなメソッドを持つ。</p>
+<pre><code class="scala">def writes(o: A): JsValue</code></pre>
+<p>この<code>writes</code>は引数として型<code>A</code>の値<code>o</code>を取り、JSONを表す型<code>JsValue</code>を返しているので、<code>writes</code>は型<code>A</code>からJSONへ変換する関数であるといえる。例えば、Playでよく使う<code>Json.toJson</code>という関数は次のようになる。</p>
+<blockquote>
+<p><a href="https://github.com/playframework/playframework/blob/master/framework/src/play-json/src/main/scala/play/api/libs/json/Json.scala#L118" class="uri">https://github.com/playframework/playframework/blob/master/framework/src/play-json/src/main/scala/play/api/libs/json/Json.scala#L118</a></p>
+</blockquote>
+<pre><code class="scala">def toJson[T](o: T)(implicit tjs: Writes[T]): JsValue = tjs.writes(o)</code></pre>
+<p>このように、implicitパラメーターで<code>Writes[T]</code>のインスタンスを受け取って、それを用いてJSONへの変換を行う。 これをそっくりXMLへ移植すればよい。</p>
+<h1>型<code>A</code>をXMLへ変換する型クラス<code>XmlWrites[A]</code></h1>
+<p>JSONへ変換する際に用いた型クラス<code>Writes[A]</code>とほとんど同じ<code>XmlWrites[A]</code>を次のように定義する。ScalaにはXMLを表す型があらかじめ用意されているので、それをそのまま用いればよい。</p>
+<pre><code class="scala">trait XmlWrites[-A] {
+  def writes(o: A): scala.xml.NodeSeq
+}</code></pre>
+<p>そして、<code>Json.toJson</code>のような関数を定義する。</p>
+<pre><code class="scala">object Xml {
+  def toXml[W](o: W)(implicit X: XmlWrites[W]): scala.xml.NodeSeq = X.writes(o)
+}</code></pre>
+<p>これは次のように使うことができる。</p>
+<pre><code class="scala">case class Test(a: String, b: Int)
+
+implicit val testWrites: XmlWrites[Test] = new Writes[Test] {
+  def writes(o: Test): NodeSeq =
+    <a>
+      {o.a}
+    </a>
+    <b>
+      {o.b.toString}
+    </b>
+}
+
+Xml.toXml(Test("hoge", 123))</code></pre>
+<p>やや冗長だが、これで一応動作はする。</p>
+<h1>マクロを用いたインスタンスの自動生成</h1>
+<p>Playの<code>Writes</code>にはマクロを使ってcase classの<code>Writes</code>インスタンスを自動生成することができる。例えば先ほどの<code>Test</code>の<code>Writes</code>は次のように書ける。</p>
+<pre><code class="scala">case class Test(a: String, b: Int)
+
+implicit val testJsonWrites: Writes[Test] = Json.writes[Test]
+
+Json.toJson(Test("hoge", 123))</code></pre>
+<p>このように一行でインスタンスを生成できる。Playの実装を調べるとScalaのマクロを使ってインスタンスを生成していたので、<a href="http://matsu-chara.hatenablog.com/entry/2015/06/21/110000">こちらの記事</a>を参考にしつつ、case classのインスタンスを自動生成するマクロを次のように実装する。</p>
+<pre><code class="scala">object Xml {
+  def toXml[W](o: W)(implicit X: XmlWrites[W]): scala.xml.NodeSeq = X.writes(o)
+
+  def xmlWrites[A]: XmlWrites[A] = macro XmlMacroImpl.impl[A]
+}</code></pre>
+<pre><code class="scala">// macroでcase classのXmlWritesインスタンスを自動導出する
+// http://matsu-chara.hatenablog.com/entry/2015/06/21/110000
+object XmlMacroImpl {
+  def impl[A: c.WeakTypeTag](c: blackbox.Context): c.Expr[XmlWrites[A]] ={
+    import c.universe._
+
+    // case classのクラス名
+    val caseClassSym: c.universe.Symbol = c.weakTypeOf[A].typeSymbol
+    if (!caseClassSym.isClass || !caseClassSym.asClass.isCaseClass) c.abort(c.enclosingPosition, s"$caseClassSym is not a case class")
+
+    // 各フィールドのシンボル
+    val syms: List[TermSymbol] = caseClassSym.typeSignature.decls.toList.collect { case x: TermSymbol if x.isVal && x.isCaseAccessor => x }
+
+    val xmlTreeList: List[Tree] = syms.map { e =>
+      val name = e.name.toString.trim
+      val elemTree = q"_root_.scala.xml.Elem(null, $name, _root_.scala.xml.Null, _root_.scala.xml.TopScope, false, implicitly[XmlWrites[${e.typeSignature}]].writes(o.${TermName(name)}): _*)"
+      q"$$removeEmptyNode($elemTree)"
+    }
+
+    val xmlTree: Tree = xmlTreeList.tail.foldLeft(xmlTreeList.head)((x, y) =>
+      q"$x ++ $y"
+    )
+
+    val finalTree: Tree =
+      q"""
+        def $$removeEmptyNode(node: _root_.scala.xml.Elem): _root_.scala.xml.NodeSeq = node match {
+          case _root_.scala.xml.Elem(_, _, _, _) => _root_.scala.xml.NodeSeq.Empty
+          case _ => node
+        }
+
+        new XmlWrites[$caseClassSym] {
+          def writes(o: $caseClassSym): scala.xml.NodeSeq = $xmlTree
+        }
+      """
+
+    c.Expr[XmlWrites[A]](finalTree)
+  }
+}</code></pre>
+<p>case classかどうかを判定して、case classならばフィールドと型情報を取得し、それを使ってコードを組み立てていく。また、<code>$$removeEmptyNode</code>関数は<code>&lt;a&gt;NodeSeq.Empty&lt;/a&gt;</code>のようなXMLノードが発生した際に、その要素を消去する関数である。</p>
+<p>あとは、よく使いそうなインスタンスを<code>XmlWrites</code>のコンパニオンオブジェクトに用意しておく。</p>
+<pre><code class="scala">object XmlWrites {
+  implicit val stringWrites: XmlWrites[String] = new XmlWrites[String] {
+    def writes(o: String): NodeSeq = Text(o)
+  }
+
+  implicit val intWrites: XmlWrites[Int] = new XmlWrites[Int] {
+    def writes(o: Int): NodeSeq = Text(o.toString)
+  }
+
+  implicit val floatWrites: XmlWrites[Float] = new XmlWrites[Float] {
+    def writes(o: Float): NodeSeq = Text(o.toString)
+  }
+
+  implicit val doubleWrites: XmlWrites[Double] = new XmlWrites[Double] {
+    def writes(o: Double): NodeSeq = Text(o.toString)
+  }
+
+  implicit val booleanWrites: XmlWrites[Boolean] = new XmlWrites[Boolean] {
+    def writes(o: Boolean): NodeSeq = Text(o.toString)
+  }
+
+  implicit def listWrites[A](implicit W: XmlWrites[A]): XmlWrites[List[A]] = new XmlWrites[List[A]] {
+    def writes(o: List[A]): NodeSeq = NodeSeq.fromSeq(o.flatMap(W.writes(_).toSeq))
+  }
+
+  implicit def optionWrites[A](implicit W: XmlWrites[A]): XmlWrites[Option[A]] = new XmlWrites[Option[A]] {
+    def writes(o: Option[A]): NodeSeq = o match {
+      case Some(a) => W.writes(a)
+      case None => NodeSeq.Empty
+    }
+  }
+}</code></pre>
+<p>これらを使えば、先ほどのcase class<code>Test</code>の<code>XmlWrites[Test]</code>は次のように生成できる。</p>
+<pre><code class="scala">case class Test(a: String, b: Int)
+
+implicit val testJsonWrites: XmlWrites[Test] = Xml.xmlWrites[Test]
+
+Xml.toXml(Test("hoge", 123))</code></pre>
+<h1>まとめ</h1>
+<p>この記事ではcase classからXMLへ変換する型クラスを用いて、XMLを生成し、かつインスタンスをマクロで生成するということを行った。はじめてのマクロにはいろいろ苦労したが、実用的なものが少ない行数で実装できてよかった。</p>

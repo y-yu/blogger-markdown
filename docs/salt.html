@@ -1,0 +1,84 @@
+<h1>はじめに</h1>
+<p>この記事ではパスワードを保存する際によく用いられるソルトとハッシュ関数を使うやり方について、なぜそれが微妙であるかを解説した後に、それを解決する方法を紹介する。 もし記事の中に何か誤りがあれば、気軽に指摘して欲しいと思う。</p>
+<h1>ハッシュ関数とソルトを用いたパスワードの保存</h1>
+<p>例えば次のような変数と関数があるとする。</p>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: center;">変数</th>
+<th>意味</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: center;">$m$</td>
+<td>パスワード（メッセージ<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>）</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$k$</td>
+<td>ソルト</td>
+</tr>
+<tr class="odd">
+<td style="text-align: center;">$H$</td>
+<td>ハッシュ関数</td>
+</tr>
+<tr class="even">
+<td style="text-align: center;">$a \mid\mid b$</td>
+<td>文字列$a$と$b$の結合</td>
+</tr>
+</tbody>
+</table>
+<p>すると、次のようなコードでパスワードからハッシュ値を求めてデータベースなどに保存するケースが多いと思う。</p>
+\[
+hp = H(k \mid\mid m)
+\]
+<p>しかし、使うハッシュ関数によっては、このようなコードであると問題が起きる。</p>
+<h1>前からソルトを付与する方法と伸長攻撃</h1>
+<p>ハッシュ関数によっては、<strong>伸長攻撃</strong>と呼ばれる次のような攻撃が可能なものがある。</p>
+<ul>
+<li>$m$と$k$によるハッシュ値$H(k \mid\mid m)$が分かると、$m$に適当な文字列を追加した文字列$m'$について、$k$を知ることなく$H(k \mid\mid m')$を求めることができる</li>
+</ul>
+<p>例えばSHA1やSHA2、MD5などはこのような特徴を持つ。従って、攻撃者はあらかじめ、1文字のパスワードなど短いパスワードのハッシュ値を入手した後、長い文字列をパスワードにした場合のハッシュ値を計算することができる。よって、この方法はやや危険であると言える。</p>
+<h1>後ろからソルトを付与する方法</h1>
+<p>では、$H(m \mid\mid k)$のように後ろからソルトを付与すればよいのかもしれない。確かにこの方法で伸長攻撃はできなくなるが、この方法を用いると、ハッシュ関数が脆弱になった場合に問題が発生する。 ハッシュ関数には次のような性質がある。</p>
+<dl>
+  <dt>弱衝突耐性</dt>
+  <dd>あるメッセージ$m$と等しいハッシュ値を持つような$m'$を求めるのが困難である性質<dd>
+  <dt>強衝突耐性</dt>
+  <dd>任意のハッシュ値について、$H(m) = H(m')$となる$m$と$m'$の組を見つけるのが困難である性質</dd>
+</dl>
+<p>今、パスワードを次のような方法でハッシュ化し、データベースに保存しているとする。</p>
+\[
+hp = H(m \mid\mid k)
+\]
+<p>弱衝突耐性が破られているとして、攻撃者はまず既知のメッセージ$m$についてハッシュ値が等しくなる$H(m)=H(m')$となる$m′$を得ることができる。$m \ne m′$であったとしても、$H(m)=H(m′)$であるとハッシュ関数の内部状態が$k$までで同じになってしまうので、$H(m \mid\mid k)=H(m′ \mid\mid k)$となり、パスワードが異なるにも関わらず意図しない認証をしてしまう可能性がある。</p>
+<h1>メッセージ認証コードとHMAC</h1>
+<p>これらの対策として、最終的には<a href="https://ja.wikipedia.org/wiki/HMAC">HMAC</a>と呼ばれる方法を用いるのがよいとされている。HMACは、鍵（ソルト）を$k$、メッセージ（パスワード）を$m$、ハッシュ関数を$H$とした時に次のような関数である。なお、$\oplus$は排他的論理和を表し、$ipad$と$opad$は定数である。</p>
+\[
+\begin{align}
+HMAC &= \\
+  &\text{val}\, ikey = k \oplus ipad \\
+  &\text{val}\, okey = k \oplus opad \\
+  &H(okey \mid\mid H(ikey \mid\mid m))
+\end{align}
+\]
+<p>このように、2回ハッシュ関数に入れることで、ハッシュ関数に伸長攻撃があったり強衝突耐性が破れていたとしてもHMACが直ちに危険になることはない。</p>
+<h1>まとめ</h1>
+<p>ソルトを前や後ろから付与してパスワードをハッシュ化するのはよくないので、特に理由がなければHMACを使う方がよいと思われる。</p>
+<h1>謝辞</h1>
+<p>後ろからソルトを付けた際に危険になる場合については、<a href="https://twitter.com/herumi">@herumi</a>さんから情報を頂いた。</p>
+<blockquote class="twitter-tweet" data-conversation="none" data-lang="ja"><p lang="ja" dir="ltr">例えば衝突困難性が破られたMD5でH(m||k)を使うと意図しない認証をしてしまう可能性（<a href="https://t.co/wuQ8adA83I">https://t.co/wuQ8adA83I</a>）がありますがHMAC-MD5なら今のところまだ大丈夫（なはず<a href="https://t.co/NYePTKpaJu">https://t.co/NYePTKpaJu</a>）という違いがあります。<a href="https://twitter.com/_yyu_">@_yyu_</a></p>&mdash; herumi (@herumi) <a href="https://twitter.com/herumi/status/705256862304702464">2016年3月3日</a></blockquote>
+<script async src="//platform.twitter.com/widgets.js" charset="utf-8"></script>
+<h1>参考文献</h1>
+<ul>
+<li><a href="https://ja.wikipedia.org/wiki/%E5%8E%9F%E5%83%8F%E6%94%BB%E6%92%83">原像攻撃</a></li>
+<li><a href="http://www.amazon.co.jp/dp/479804413X">クラウドを支えるこれからの暗号技術</a></li>
+<li><a href="http://rdist.root.org/2009/10/29/stop-using-unsafe-keyed-hashes-use-hmac/">Stop using unsafe keyed hashes, use HMAC</a></li>
+<li><a href="http://www.amazon.co.jp/dp/4797382228">暗号技術入門 第3版 秘密の国のアリス</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>この記事での<strong>メッセージ</strong>とは、適当な文字列という意味である。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

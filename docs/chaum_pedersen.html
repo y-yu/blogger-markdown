@@ -1,0 +1,86 @@
+<p><a href="http://www.cs.elte.hu/~rfid/chaum_pedersen.pdf">Chaum-Pedersenの論文</a>に書いてある方法で、<a href="http://qiita.com/_yyu_/items/8d8c82ba729b06b26e67#2-3">Mental Pokerのカードのドロー</a>に必要な部分をすごく端的に書き下してみました。ただ、僕自身が暗号技術に詳しいわけではなく、間違いを含んでいる可能性があるので、興味を持った方は論文をあたる方がいいでしょう。</p>
+<p>Mental Pokerのドローは、暗号化された山札からカードを各プレイヤーの秘密鍵で復号化しながらたらい回しにしていきます。この時に各プレイヤーは本当にそのプレイヤーの持つ秘密鍵で復号化したのかどうかというのは、ゲームの公平性に関わる問題です。例えばあるプレイヤーが偽の鍵で復号しているにも関わらず、それが検出できないならば、誰か一人でも不誠実なプレイヤーがいたらもはやゲームが成り立たなくなります。ただ、プレイヤーの鍵を公開してしまうと山札を全て復号化できてしまうので、つまり他のプレイヤーに自分の手札などの情報が分かってしまい、プレイヤーの戦略が流出してしうので、それはよくないです。 <img src="https://qiita-image-store.s3.amazonaws.com/0/10815/6892adaa-a209-d2b2-b32e-f51d4e86186a.png" alt="image.png" /></p>
+<h1>登場人物</h1>
+<dl>
+  <dt>Prover</dt>
+  <dd>秘密の鍵を使って計算をしたが、その鍵を<em>Verifier</em>には教えずに本当に自分の鍵を使って計算を行なったということを証明したい人</dd>
+  <dt>Verifier</dt>
+  <dd><em>Prover</em>が本当に自身の鍵を使って計算を行ったのか検証したい人</dd>
+</dl>
+<h1>情報</h1>
+<p>括弧の中は<a href="http://qiita.com/_yyu_/items/8d8c82ba729b06b26e67#2-3">上記のプロトコル</a>で対応する変数を表わす。</p>
+<h2>Prover, Verifierが両方とも知っている情報</h2>
+<dl>
+  <dt>$g$</dt>
+  <dd>特別な性質を持つ乱数（$\alpha$）</dd>
+  <dt>$h$</dt>
+  <dd><em>Prover</em>の公開鍵$g^x$（$\beta_i$）</dd>
+  <dt>$z$</dt>
+  <dd><em>Prover</em>の計算の元になる値（$e_{r-1}$）</em></dd>
+  <dt>$m$</dd>
+  <dd><em>Prover</em>が秘密鍵$x$を用いて計算したとされる値$z^{x^{-1}}$（$e_r$）</dd>
+</dl>
+<h2>Proverしか知らない情報</h2>
+<dl>
+  <dt>$x$</dt>
+  <dd><em>Prover</em>の秘密鍵（$K_i$）</dd>
+</dl>
+<h1>何ができるのか</h1>
+<p>この手法を使うことで、 <em>Prover</em> の公開鍵を作るのに使われた$x$と、 $m$を計算する時に使われた$x$が同じであることを、 <em>Verifier</em> は$x$を知ることなく確かめられます。つまり、 <em>Verifier</em> は</p>
+\[
+\log_g{h} \stackrel{?}{=} \log_m{z}
+\]
+<p>を検証できますが、$\log_g{h}$や$\log_m{z}$の値（つまり <em>Prover</em> の秘密鍵$x$）を突き止めることはできません。</p>
+<h1>プロトコル</h1>
+<ol>
+<li><em>Prover</em> は乱数$s$を生成して$(a, b) = (g^s, m^s)$を計算し$(a, b)$を <em>Verifier</em> へ送信する</li>
+<li><em>Verifier</em> は乱数$c$を生成して <em>Prover</em> へ送信する</li>
+<li><em>Prover</em> は$r = s + cx$を計算して <em>Verifier</em> へ送信する</li>
+<li><em>Verifier</em> は$g^r \stackrel{?}{=} ah^c$かつ$m^r \stackrel{?}{=} bz^c$を検証する</li>
+</ol>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/074b7da3-f7a2-34ce-5401-510ed2dbba60.png" alt="protocol.png" /></p>
+<h1>どういうことか</h1>
+<p>検証している式</p>
+\[
+g^r \stackrel{?}{=} ah^c \wedge m^r \stackrel{?}{=} bz^c
+\]
+<p>は$r = s + cx$なので</p>
+\[
+g^{s+cx} \stackrel{?}{=} ah^c \wedge m^{s+cx} \stackrel{?}{=} bz^c
+\]
+<p>と同じです。ここで <em>Verifier</em> は$c$を知っていますが、$s$を知らないので <em>Prover</em> の秘密鍵$x$を$r$から求めることはできません。また、$c$は <em>Verifier</em> によって無作為に選ばれるので <em>Prover</em> が都合のいい数を用意することもできません。</p>
+<p>また、$a = g^s, b = m^s$なので</p>
+\[
+g^{s+cx} \stackrel{?}{=} g^s h^c \wedge m^{s+cx} \stackrel{?}{=} m^s z^c
+\]
+<p>さらに$h = g^x$であり、$m = z^{x^{-1}}$より$z = m^x$なので</p>
+\[
+g^{s+cx} \stackrel{?}{=} g^s {g^x}^c \wedge m^{s+cx} \stackrel{?}{=} m^s {m^x}^c \\
+g^{s+cx} \stackrel{?}{=} g^{s+cx} \wedge m^{s+cx} \stackrel{?}{=} m^{s+cx}
+\]
+<p>となるので、 <em>Prover</em> が$h$と$z$、$r$を同じ秘密鍵$x$を用いて計算したならば、この式は真になります。</p>
+<h1>二回のチャレンジ</h1>
+<p><em>Prover</em> が$s$を変更しないまま、 <em>Verifier</em> が異なる乱数$c_1, c_2$を送信して、異なる$r_1, r_2$を入手すると <em>Prover</em> の秘密鍵を突き止めることができます。 今、 <em>Verifier</em> が二つの乱数$c_1, c_2$を送信して、次のような$r_1, r_2$を <em>Prover</em> が返したとします。</p>
+\[
+r_1 = s + c_1 x \\
+r_2 = s + c_2 x
+\]
+<p><em>Prover</em> が正しい$x$を用いていた場合、</p>
+\[
+g^{r_1} = ah^{c_1} \\
+g^{r_2} = ah^{c_2}
+\]
+<p>上の式を下の式で割ると</p>
+\[
+\frac{g^{r_1}}{g^{r_2}} = \frac{ah^{c_1}}{ah^{c_2}} \\
+g^{r_1 - r_2} = h^{c_1 - c_2}
+\]
+<p>よって</p>
+\[
+h = g^{\frac{r_1 - r_2}{c_1 - c_2}}
+\]
+<p>ゆえに</p>
+\[
+\log_g{h} = \frac{r_1 - r_2}{c_1 - c_2}
+\]
+<p>$h = g^x$より$\log_g{h} = x$なので$x = \frac{r_1 - r_2}{c_1 - c_2}$となり <em>Verifier</em> に <em>Prover</em> の秘密鍵$x$が計算できてしまいます。</p>

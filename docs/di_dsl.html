@@ -1,0 +1,303 @@
+<p><a href="https://speakerdeck.com/marakana/dead-simple-dependency-injection-in-scala">Dead-Simple Dependency Injection in Scala</a>という発表で、Dependency Injection（依存の注入）を<a href="http://itpro.nikkeibp.co.jp/article/COLUMN/20090303/325807/">Readerモナド</a>などを用いて行うという技術があった。下記がその発表である。</p>
+<p><a href="https://www.youtube.com/watch?v=ZasXwtTRkio"><img src="https://img.youtube.com/vi/ZasXwtTRkio/0.jpg" /></a></p>
+<p>この記事ではまず、Dependency Injectionについての説明と、Readerモナドについての説明を行い、次にReaderモナドを使ったDependency Injectionについて述べて、<a href="http://d.hatena.ne.jp/fumiexcel/20121111/1352614885">Freeモナド</a>を用いて小さな<a href="https://ja.wikipedia.org/wiki/%E3%83%89%E3%83%A1%E3%82%A4%E3%83%B3%E5%9B%BA%E6%9C%89%E8%A8%80%E8%AA%9E">DSL</a>を作るアプローチを紹介する。 この記事はモナドやDependency Injectionなどに関する前提知識がなくてもある程度読めるように意図しているが、Scalaの文法的な知識を前提としている。また、もし説明が不足している点や文章の意図が分かりにくい部分があれば、気軽にコメントなどで指摘して欲しい。</p>
+<blockquote>
+<p>注意： 記事の中にあるコードは読みやすさのために<code>import</code>などを省略しているので、このままでは動かない。動かしたい方は<a href="https://github.com/yoshimuraYuu/DIwithTaglessFinal">Githubのリポジトリ</a>を使うとよい。</p>
+</blockquote>
+<h1>ReaderモナドとDependency Injection</h1>
+<p>例えば次のようにTwitterから情報を取ってきたり、ツイートを投稿する関数があるとする。</p>
+<pre><code class="scala:twitterrepository.scala">object TwitterRepository {
+  val config = new NingAsyncHttpClientConfigBuilder(DefaultWSClientConfig()).build()
+  val builder = new AsyncHttpClientConfig.Builder(config)
+  val client = new NingWSClient(builder.build)
+
+  val key   = ConsumerKey(
+    "key",
+    "secret"
+  )
+  val token = RequestToken(
+    "token",
+    "secret"
+  )
+
+  def fetchUserByScreenName(screenName: String): Future[WSResponse] =
+    client.url("https://api.twitter.com/1.1/users/show.json")
+      .withQueryString("screen_name" -> screenName)
+      .sign(OAuthCalculator(key, token))
+      .get()
+
+  def updateStatus(status: String): Future[WSResponse] =
+    client.url("https://api.twitter.com/1.1/statuses/update.json")
+      .sign(OAuthCalculator(key, token))
+      .post(Map("status" -> Seq(status)))
+}</code></pre>
+<p>これで動きはするが、外部と通信する部分（<code>client</code>）やTwitterの鍵（<code>key</code>）やトークン（<code>token</code>）がハードコードされているので、別のアカウントに差し換えたり、テストする際に不便なことになる。 そこで<strong>Readerモナド</strong>を使って外から依存を注入しようというのがDead-Simple Dependency Injection in Scalaなどで紹介されている手法である。</p>
+<h2>Readerモナド</h2>
+<p>まず、Readerモナド <code>Reader</code>を次のように定義する<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>。</p>
+<pre><code class="scala:reader.scala">case class Reader[E, A](g: E => A) {
+  def apply(e: E) = g(e)
+  def run: E => A = apply
+  def map[B](f: A => B): Reader[E, B] = Reader(e => f(g(e)))
+  def flatMap[B](f: A => Reader[E, B]): Reader[E, B] = Reader(e => f(g(e))(e))
+}
+
+object Reader {
+  def pure[E, A](a: A): Reader[E, A] = Reader(e => a)
+  def ask[E]: Reader[E, E] = Reader(identity)
+  def local[E, A](f: E => E, c: Reader[E, A]): Reader[E, A] = Reader(e => c(f(e)))
+  def reader[E, A](f: E => A): Reader[E, A] = Reader(f)
+}</code></pre>
+<p><code>Reader</code>について全てを説明するのは大変なので、ここでは直感的なことだけを説明する。まず、<code>Reader</code>の<code>map</code>と<code>flatMap</code>に注目すると、今の<code>Reader</code>が持っている関数<code>g</code>に<code>e</code>を与えて実行し、それを使って<code>f</code>を実行するという操作をする関数を持つ新しい<code>Reader</code>を生成している。ただし、<code>map</code>や<code>flatMap</code>の際には<code>f</code>と<code>g</code>を組合せるだけで、実際に実行するのは<code>apply</code>もしくは<code>run</code><a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>を用いて引数<code>e</code>に値を投入した時に初めて全ての計算が実行されることになる。 次に<a href="http://www.ne.jp/asahi/hishidama/home/tech/scala/object.html#h_companion_object">コンパニオンオブジェクト</a><code>Reader</code>で定義しているものについて説明する。</p>
+<dl>
+  <dt><code>pure</code></dt>
+  <dd>任意の値を<code>Reader</code>にする</dd>
+  <dt><code>ask</code></dt>
+  <dd>環境<code>e</code>を取得する</dd>
+  <dt><code>local</code></dt>
+  <dd>環境<code>e</code>を書き換える</dd>
+  <dt><code>reader</code></dt>
+  <dd>関数を<code>Reader</code>にする</dd>
+</dl>
+<p>これらの説明は今はよく分からないかもしれないが、後で実際に使う際に具体的な例として表われるので心配ない。</p>
+<h2>Readerモナド vs 関数</h2>
+<p>一見するとReaderモナドは関数（ラムダ式）とほとんど同じように思える。しかし、大きな違いとして、Readerモナドは自身が持つ関数に共通の<strong>環境</strong>というグローバル変数でもなくローカル変数でもない第三の場所を提供する<a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a>。関数の中から何か情報を参照したい場合、通常は次の二択になる。</p>
+<ul>
+<li>引数で渡す</li>
+<li>グローバル変数から読み出す</li>
+</ul>
+<p>グローバル変数を用いることが不味いというのはよく知られているが、かといって引数を使うアプローチも、次のように関数がいくつも連なった状況を考えると問題が浮き彫りになる。</p>
+<pre><code class="scala">def main(args: Array[String]) = {
+  ???
+  level1(args[0])
+}
+
+def level1(d: String) = {
+  ???  // ここでは d を使わない
+  level2(d)
+}
+
+def level2(d: String) = {
+  ???  // ここでは d を使わない
+  need_arg(d)
+}
+
+def need_arg(d: String) =
+  ??? // d を必要とする</code></pre>
+<p>このようにある関数が依存してる関数の依存をわざわざ明示的に引数で渡す必要があるので、引数が増えて混乱したり、コードの見通しが悪くなったりする。また、依存が増えた際に関係する関数の引数を全て増やす必要がある。 一方で、Readerモナドは共通に使う情報を引数でもグローバル変数でもない第三の場所（環境）に入れることで、グローバル変数と引数で一長一短だと思われていた問題をスマートに解決する。</p>
+<h2>Dependency Injection</h2>
+<p>具体的な例で、 Readerモナドを用いたDependency Injectionがどのように行われるのだろうか。</p>
+<p>まず、依存を持つことを表すトレイトを用意する。</p>
+<pre><code class="scala:usewsclient.scala">trait UseWSClient {
+  val client: WSClient
+}</code></pre>
+<pre><code class="scala:useoauthcred.scala">trait UseOAuthCred {
+  val cred: OAuthCalculator
+}</code></pre>
+<p><code>TwitterRepository</code>を改造して、Readerモナドを返すようにする。また、環境として先程定義したトレイト<code>UseWSClient</code>と<code>UseOAuthCred</code>を<code>with</code>で結合したものを用いる。</p>
+<pre><code class="scala:twitterrepositorydi.scala">object TwitterRepositoryDI {
+  def fetchUserByScreenName(screenName: String): Reader[UseWSClient with UseOAuthCred, Future[WSResponse]] =
+    reader(env =>
+      env.client.url("https://api.twitter.com/1.1/users/show.json")
+        .withQueryString("screen_name" -> screenName)
+        .sign(env.cred)
+        .get())
+
+  def updateStatus(status: String): Reader[UseWSClient with UseOAuthCred, Future[WSResponse]] =
+    reader(env =>
+      env.client.url("https://api.twitter.com/1.1/statuses/update.json")
+        .sign(env.cred)
+        .post(Map("status" -> Seq(status))))
+
+}</code></pre>
+<p>そして、依存を保存しておく場所を作る。</p>
+<pre><code class="scala:defaultenvironment.scala">object DefaultEnvironment {
+  val config  = new NingAsyncHttpClientConfigBuilder(DefaultWSClientConfig()).build()
+  val builder = new AsyncHttpClientConfig.Builder(config)
+  val c       = new NingWSClient(builder.build)
+
+  val defaultEnvironment = new UseWSClient with UseOAuthCred {
+    val client = c
+    val cred = OAuthCalculator(
+      ConsumerKey(
+        "key",
+        "secret"
+      ),
+      RequestToken(
+        "token",
+        "secret"
+      )
+    )
+  }
+}</code></pre>
+<p>最終的には次のように実行する。</p>
+<pre><code class="scala">fetchUserByScreenName("_yyu_").run(DefaultEnvironment.defaultEnvironment)</code></pre>
+<p>このように、Readerモナドの環境として依存を注入できるうえ、これらのReaderを合成することもできる<a href="#fn4" class="footnote-ref" id="fnref4"><sup>4</sup></a>。</p>
+<pre><code class="scala">(for {
+  _ <- fetchUserByScreenName("_yyu_")
+  _ <- updateStatus("good")
+} yield () ).run(DefaultEnvironment.defaultEnvironment)</code></pre>
+<h2>依存の選択</h2>
+<p>例えば次のよう<code>Future[Boolean]</code>を返すような例と、その結果に応じてどの依存を使うのかを選択して注入する例を考えてみることにする。 まずは次のような関数を用意する。</p>
+<pre><code class="scala:twitterrepositorydi.scala">def existUserWithScreenName(screenName: String): Reader[UseWSClient with UseOAuthCred, Future[Boolean]] =
+  reader(env =>
+    for {
+      res <- env.client.url("https://api.twitter.com/1.1/users/show.json")
+               .withQueryString("screen_name" -> screenName)
+               .sign(env.cred)
+               .get()
+    } yield res.status == 200
+  )</code></pre>
+<p>この関数は<code>screenName</code>を持つユーザーが存在するかどうかを判定する関数である。</p>
+<p>次に<code>defaultEnvironment</code>とは別の依存を用意する。</p>
+<pre><code class="scala:defaultenvironment.scala">val adminEnvironment = new UseWSClient with UseOAuthCred {
+  val client = c
+  val cred = OAuthCalculator(
+    ConsumerKey(
+      "key",
+      "secret"
+    ),
+    RequestToken(
+      "token",
+      "secret"
+    )
+  )
+}</code></pre>
+<p>そして、環境を変更してReaderモナドを実行する<code>local</code>を使って次のようにする。</p>
+<pre><code class="scala">(for {
+   fb <- existUserWithScreenName("_yyu_")
+   _  <- local(
+           (e: UseWSClient with UseOAuthCred) =>
+             if (Await.result(fb, Duration.Inf))
+               DefaultEnvironment.adminEnvironment
+             else
+               e,
+           updateStatus("test")
+         )
+} yield () ).run(DefaultEnvironment.defaultEnvironment)</code></pre>
+<p>このコードでは、“_yyu_”というユーザーが存在すれば環境を<code>adminEnvironment</code>へ変更してから<code>updateStatus</code>を実行し、そうでなけば通常の環境で実行する。 このように、この方法では依存を実行時の値によって切り換えるといった柔軟な処理ができる。</p>
+<h1>DSLとFreeモナド</h1>
+<p>計算を合成したりしつつ、依存を注入できるようになった。これを使ってTwitterを操作するためのミニプログラム言語（DSL）を作ろうというのが、Dead-Simple Dependency Injection in Scalaの後半パートになる。</p>
+<h2>小さなDSL</h2>
+<p>このTwitterの例では次のように、「次の計算」を持てるようなケースクラスとトレイトを用意する。</p>
+<pre><code class="scala:twitter.scala">sealed trait Twitter[A]
+
+case class Fetch[A](screenName: String, next: WSResponse => A) extends Twitter[A]
+case class Update[A](status: String, next: A) extends Twitter[A]</code></pre>
+<p>次の計算は型<code>A</code>の<code>next</code>である。例えばユーザー情報を取得して、取得できた場合はツイートするという処理をこのように書きたい。</p>
+<pre><code class="scala">Fetch(
+  "_yyu_",
+  (fws: Future[WSResponse]) => {
+    val ws = Await.result(fws, Duration.Inf)
+    if (ws.status == 200)
+      Update("exist", ())
+    else
+      Update("not exist", ())
+  }
+)</code></pre>
+<p>あとは各ケースクラスに対応する処理を書けばよいように思える。</p>
+<pre><code class="scala">def twitter_interpreter[A](a: Twitter[A]) = a match {
+  case Fetch(user, next) =>
+    for {
+      res <- fetchUserByScreenName(user)
+    } yield twitter_interpreter(next(res))
+
+  case Update(status, next) =>
+    for {
+      _ <- updateStatus(status)
+    } yield twitter_interpreter(next)
+}</code></pre>
+<p>しかし、実はこれは上手くいかない。なぜなら<code>Fetch</code>や<code>Update</code>の持つ<code>next</code>の型は<code>A</code>であって<code>Twitter[A]</code>ではない。では<code>A</code>を<code>Twitter[A]</code>にすれば動くかというと、そうでもない。もし<code>next</code>が<code>Twitter[A]</code>だとすると、<code>Fetch</code>は次のようになる。</p>
+<pre><code class="scala">case class Fetch[A](screenName: String, next: WSResponse => Twitter[A]) extends Twitter[Twitter[A]]</code></pre>
+<p>このように<code>Fetch</code>の型が<code>Twitter[Twitter[A]]</code>となり、<code>Twitter</code>が二重になってしまって大変扱いづらい。 そこで、Dead-Simple Dependency Injection in Scalaでは<strong>Freeモナド</strong>を使ってこの問題を解決する。</p>
+<h2>ファンクターとFreeモナドとインタープリター</h2>
+<p>Freeモナドは<code>Twitter[Twitter[A]]</code>のような構造を<code>Free[Twitter, A]</code>というFreeモナドへ落すデータ構造の一つである。これは、例えば<code>Twitter[Twitter[Twitter[Twitter[A]]]]</code>のようにどれだけネストしていたとしても全てが<code>Free[Twitter, A]</code>になる<a href="#fn5" class="footnote-ref" id="fnref5"><sup>5</sup></a>。 このように便利なFreeモナドだが、この効能を得るためにFreeモナドは「<code>Twitter</code>が<strong>ファンクター</strong>である」という性質を要求する。</p>
+<h3>ファンクター</h3>
+<p>ある型<code>F</code>がファンクターであるとは、<code>Twitter</code>は次のような型を持つ関数<code>map</code>を定義できるということである。</p>
+<pre><code class="scala:functor.scala">trait Functor[F[_]] {
+  def map[A, B](a: F[A])(f: A => B): F[B]
+}</code></pre>
+<p>さらに、関数<code>map</code>は次の<strong>ファンクター則</strong>に則っていなければならない。</p>
+<ol>
+<li><code>map</code>の<code>f</code>に<code>x =&gt; x</code>を入れて生成されたものが、元の値と等しい
+<ul>
+<li><code>assert( t.map(x =&gt; x) == t )</code></li>
+</ul></li>
+<li>適当な関数<code>g</code>と<code>h</code>について、<code>g</code>と<code>h</code>の合成関数（<code>x =&gt; g(h(x))</code>）で<code>map</code>した値と、<code>h</code>で<code>map</code>した値を<code>g</code>で<code>map</code>した値が等しい
+<ul>
+<li><code>assert( t.map(x =&gt; g(h(x))) == t.map(h).map(g) )</code></li>
+</ul></li>
+</ol>
+<p>このような制約を持つ<code>map</code>を<code>Fetch</code>や<code>Update</code>に対してどのように定義すればいいだろうか。少々天下り的だが、次のようにすればよい。</p>
+<pre><code class="scala">implicit val twitterFunctor = new Functor[Twitter] {
+  def map[A, B](a: Twitter[A])(f: A => B) = a match {
+    case Fetch(screenName, next) => Fetch(screenName, x => f(next(x)))
+    case Update(status, next)    => Update(status, f(next))
+  }
+}</code></pre>
+<h3>Freeモナド</h3>
+<p>Freeモナド<code>Free</code>を次のように定義する。</p>
+<pre><code class="scala:free.scala">case class Done[F[_]: Functor, A](a: A) extends Free[F, A]
+case class More[F[_]: Functor, A](k: F[Free[F, A]]) extends Free[F, A]
+
+class Free[F[_], A](implicit F: Functor[F]) {
+  def flatMap[B](f: A => Free[F, B]): Free[F, B] = this match {
+    case Done(a) => f(a)
+    case More(k) => More[F, B](F.map(k)(_ flatMap f))
+  }
+
+  def map[B](f: A => B): Free[F, B] =
+    flatMap(x => Done(f(x)))
+}</code></pre>
+<p>そして、DSLを次のように修正する。</p>
+<pre><code class="scala">def fetch[A](screenName: String, f: WSResponse => Free[Twitter, A]): Free[Twitter, A] =
+  More(Fetch(screenName, f))
+
+def update(status: String): Free[Twitter, Unit] =
+  More(Update(status, Done()))</code></pre>
+<p>そして、例えば“_yyu_”というユーザーの情報を取得して、取得できた場合はツイートするという処理を次のように書ける。</p>
+<pre><code class="scala">fetch(
+  "_yyu_",
+  res =>
+    if (res.status == 200)
+      update("exist")
+    else
+      update("not exist")
+)</code></pre>
+<p>DSLの組み立てが完了したので、次はこれを実行する<strong>インタープリター</strong>を作成する。</p>
+<h3>インタープリター</h3>
+<p>Freeモナドを使ったとしても、普通のインタープリターと特に違いはない。</p>
+<pre><code class="scala:twitterinterpreter.scala">def runTwitter[A](dsl: Free[Twitter, A], env: UseWSClient with UseOAuthCred): Unit = dsl match {
+  case Done(a) => ()
+  case More(Fetch(screenName, f)) =>
+    for {
+      fws <- fetchUserByScreenName(screenName).run(env)
+    } yield runTwitter(f(fws), env)
+  case More(Update(status, next)) =>
+    for {
+      _ <- updateStatus(status).run(env)
+    } yield runTwitter(next, env)
+}</code></pre>
+<p>さきほど作ったDSLを次のように実行する。</p>
+<pre><code class="scala">val dsl = fetch(
+  "_yyu_",
+  res =>
+    if (res.status == 200)
+      update("exist")
+    else
+      update("not exist")
+)
+
+runTwitter(dsl, DefaultEnvironment.defaultEnvironment)</code></pre>
+<h1>まとめ</h1>
+<p>ReaderモナドとFreeモナドを使って依存を注入するDSLを作ることができたが、これには<strong>Expression Problem</strong>という解決しなければならない課題が残っている。次の機会にはExpression Problemの解決法として、<strong>Inject</strong>と<strong>Tagless Final</strong>の二つを紹介したい。</p>
+<p>8/5 追記： 次回作を書きました。 → <a href="http://qiita.com/yyu/items/377513f17fec536b562e">FreeモナドとTagless FinalによるDependency InjectionのためのDSL</a></p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>この<code>Reader</code>は単純化のため共変や反変のパラメータを省略している。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>この<code>run</code>は<code>apply</code>と全く同じだが、Readerモナドに環境を入れて実行する際には<code>run</code>というような名前の関数が用いられることが多いので、今回は慣習を引き継いでこちらのメソッドも用意した。<code>run</code>も<code>apply</code>も同じ意味である。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p>通常「環境」という言葉はローカル変数もグローバル変数も含んだものを指すと思うが、この記事ではReaderモナドが提供する環境という意味でのみこの言葉を使うことにする。<a href="#fnref3" class="footnote-back">↩</a></p></li>
+<li id="fn4"><p>今回の例では合成する意味は全くないが……。<a href="#fnref4" class="footnote-back">↩</a></p></li>
+<li id="fn5"><p><a href="http://www.amazon.co.jp/dp/4062639246">The Perfect Insider</a><a href="#fnref5" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

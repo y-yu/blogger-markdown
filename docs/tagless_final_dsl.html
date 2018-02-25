@@ -1,0 +1,335 @@
+<p><a href="http://qiita.com/yyu/items/a2debfcde8f1915d5083">前回の記事</a>では、ReaderモナドやFreeモナドを使ってDependency Injectionを行うための小さなDSLを組み立てた。今回の記事では、まず前回組み立てたDSLの課題である<strong>Expression Problem</strong>と、それを解決するための機能<strong>Inject</strong>と、さらには<strong>Tagless Final</strong>を用いたDSLについて述べる。 この記事は前回の記事の知識を前提としているので、分からない言葉などがある場合はまず前回の記事を参照して欲しい。また、文章について不明なことや意図が分かりにくい部分があれば気軽に指摘して欲しい。</p>
+<blockquote>
+<p>注意： 記事の中にあるコードは読みやすさのために<code>import</code>などを省略しているので、このままでは動かない。動かしたい方は<a href="https://github.com/yoshimuraYuu/DIwithTaglessFinal">Githubのリポジトリ</a>を使うとよい。</p>
+</blockquote>
+<h1>Expression Problem</h1>
+<p>Expression Problemとは、<a href="http://maoe.hatenadiary.jp/entry/20101214/1292337923">こちらのサイト</a>を引用すると次のようになる。</p>
+<blockquote>
+<ol>
+<li>静的型を使っていて</li>
+<li>再コンパイルすることなく</li>
+<li>データ型や</li>
+<li>操作を増やすのが難しい</li>
+</ol>
+</blockquote>
+<p>ということになる。具体的な例を挙げると、まず今のTwitter操作DSLにツイートを削除する機能を追加しようとしたとする。まず次のようにデータ型を用意する。</p>
+<pre><code class="scala">sealed trait Twitter[A]
+
+case class Fetch[A](screenName: String, next: WSResponse => A) extends Twitter[A]
+case class Update[A](status: String, next: A) extends Twitter[A]
+case class Delete[A](id: String, next: A) extends Twitter[A]</code></pre>
+<p>この時点では、先ほど既に書いたインタープリターとDSLは<code>Delete</code>が存在しない時代に書かれたものなので、インタープリターは<code>Delete</code>についてカバーしていなくてもよいことは自明であるが、Scalaのコンパイラにはそれが分からないので次のような警告が出る。</p>
+<pre><code>Warning:(14, 47) match may not be exhaustive.
+It would fail on the following input: Delete(_, _)
+    def map[A, B](a: Twitter[A])(f: A => B) = a match {
+                                              ^</code></pre>
+<p>警告を無視するというのも一つの手だが、ようするにこのアプローチでは一つの代数的データ型を参照するので、その代数的データ型を拡張するとそれを使っている既存のありとあらゆる関数が影響を受けてしまう。 そこで、InjectまたはTagless Finalを用いてこれを回避する。</p>
+<h1>InjectとCoproduct</h1>
+<p>Inject（Coproduct）の考え方は、今ある代数的データ型<code>Twitter</code>に<code>Delete</code>を追加せずに、新たに次のような代数的データ型を作って対応するというものである。</p>
+<pre><code class="scala">sealed trait DeleteOfTwitter[A]
+
+case class Delete[A](id: String, next: A) extends DeleteOfTwitter[A]</code></pre>
+<p>さて、これで<code>Twitter</code>を拡張してはいないのでExpression Problemは発生しないが、この<code>Twitter</code>と<code>DeleteOfTwitter</code>は関係のない型になってしまったので、一つの型としてまとめて取り扱うことができない。そこで、二つの型を取り扱えるようなデータ構造として<strong>Coproduct</strong>を導入する。</p>
+<h2>Coproduct</h2>
+<p><code>Coproduct</code>は次のように定義される。</p>
+<pre><code class="scala">case class Coproduct[F[_], G[_], A](value: Either[F[A], G[A]])</code></pre>
+<p>このように、<code>value</code>として<code>Either</code>の値を持つだけであるが、これだけで実はもう、<code>Twitter</code>と<code>DeleteOfTwitter</code>を混ぜ合わせることができる。 まず、これからの説明を簡単にするために次の型<code>TwitterWithDelete</code>を作っておく。</p>
+<pre><code class="scala">type TwitterWithDelete[A] = Coproduct[Twitter, DeleteOfTwitter, A]</code></pre>
+<p>さて、<code>Twitter</code>と<code>DeleteOfTwitter</code>を<code>Coproduct</code>を用いて混ぜるためには、Freeモナドの定義を思いだす必要がある。Freeモナドは次のような定義になっている。</p>
+<pre><code class="scala">case class Done[F[_]: Functor, A](a: A) extends Free[F, A]
+case class More[F[_]: Functor, A](k: F[Free[F, A]]) extends Free[F, A]</code></pre>
+<p>注目するべきは<code>More</code>の引数<code>k</code>である。<code>k</code>の型は<code>F[Free[F, A]]</code>となっており、今までの例ではこの<code>F</code>に<code>Twitter</code>を入れて用いていた。では<code>Twitter</code>のかわりに<code>TwitterWithDelete</code>を入れて、つまり<code>Free[TwitterWithDelete, A]</code>とするとどうなるだろうか。そのためにはまず、<code>TwitterWithDelete</code>の正体である<code>Coproduct</code>をファンクターにしなければならない。</p>
+<pre><code class="scala">object Coproduct {
+  implicit def coproductFunctor[F[_], G[_]](implicit F: Functor[F], G: Functor[G]) =
+    new Functor[({type L[A] = Coproduct[F, G, A]})#L] {
+      def map[A, B](a: Coproduct[F, G, A])(f: A => B): Coproduct[F, G, B] = a.value match {
+        case Left(e)  => Coproduct[F, G, B](Left(F.map(e)(f)))
+        case Right(e) => Coproduct[F, G, B](Right(G.map(e)(f)))
+      }
+    }
+}</code></pre>
+<p>一見するとややこしいが、<code>Coproduct</code>の中身は単なる<code>Either</code>なので、<code>Either</code>の<code>map</code>とほとんど同じになる。 これで<code>Free[TwitterWithDelete, A]</code>が作れるようになったので、もう一度<code>Free</code>における<code>More</code>の定義を見直すことにする。</p>
+<pre><code class="scala">case class More[F[_]: Functor, A](k: F[Free[F, A]]) extends Free[F, A]</code></pre>
+<p><code>F</code>には<code>TwitterWithDelete</code>が入るので、<code>More</code>の引数<code>k</code>の型は<code>TwitterWithDelete[Free[TwitterWithDelete, A]]</code>となる。<code>TwitterWithDelete</code>の型パラメーターは何に用いられているのかというと、この型パラメーターはそれぞれ<code>Twitter</code>と<code>DeleteOfTwitter</code>の型パラメーターとなっている。ではこれらの定義を見てみよう。</p>
+<pre><code class="scala">case class Fetch[A](screenName: String, next: WSResponse => A) extends Twitter[A]
+case class Update[A](status: String, next: A) extends Twitter[A]</code></pre>
+<pre><code class="scala">case class Delete[A](id: String, next: A) extends DeleteOfTwitter[A]</code></pre>
+<p>つまり、<code>TwitterWithDelete</code>の型パラメーター<code>Free[TwitterWithDelete, A]</code>は<code>next</code>の型として渡されていることになる。つまり、<code>next</code>は次のような能力を持つことになる。</p>
+<dl>
+  <dt>次の処理がある（<code>More</code>）か無い（<code>Done</code>）か<dt>
+  <dd>→ Freeモナドによる能力</dd>
+  <dt>次の処理がある場合、それが右（<code>Twitter</code>）か左（<code>DeleteOfTwitter</code>）か</dt>
+  <dd>→ Coproductによる能力</dd>
+</dl>
+<p>このように、Coproductで<code>Either[Twitter, DeleteOfTwitter]</code>の値を持つようにしたため、“どちらか”という能力が強化された。 これを使って次のように二つを併せたDSLを書くことができる<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>。</p>
+<pre><code class="scala">object TwitterWithDelete {
+  type TwitterWithDelete[A] = Coproduct[Twitter, DeleteOfTwitter, A]
+
+  def left[A](l: Twitter[A]): Either[Twitter[A], DeleteOfTwitter[A]] = Left(l)
+  def right[A](r: Delete[A]): Either[Twitter[A], DeleteOfTwitter[A]] = Right(r)
+  def coproduct[A](a: Either[Twitter[A], DeleteOfTwitter[A]]) = Coproduct[Twitter, DeleteOfTwitter, A](a)
+  def more[A](k: TwitterWithDelete[Free[TwitterWithDelete, A]]): Free[TwitterWithDelete, A] = More[TwitterWithDelete, A](k)
+  def done[A](a: A): Free[TwitterWithDelete, A] = Done[TwitterWithDelete, A](a)
+
+  val example: Free[TwitterWithDelete, Unit] =
+    more(coproduct(left(Update("new tweet", more(coproduct(right(Delete("<id>", done()))))))))
+}</code></pre>
+<p>できあがったDSLは次の部分である。</p>
+<pre><code class="scala">more(coproduct(left(Update("new tweet", more(coproduct(right(Delete("<id>", done()))))))))</code></pre>
+<p>しかし、これは<code>more(coproduct(right(???)))</code>のような部分が繰り返しあり、どう見ても使い勝手が悪い。なので<strong>Inject</strong>を使ってこのDSLを改良する。</p>
+<h2>Inject</h2>
+<p>Injectとは次のような関数を提供する<a href="http://halcat0x15a.github.io/slide/functional_scala/#/">型クラス</a>である。</p>
+<pre><code class="scala">sealed trait Inject[F[_], G[_]] {
+  def inj[A](sub: F[A]): G[A]
+}</code></pre>
+<p>この<code>Inject</code>は<code>F[A]</code>から<code>G[A]</code>へ変換する関数（メソッド）<code>inj</code>を提供する。<code>F</code>と<code>G</code>がなんでもよいとすれば、例えば<code>List[Int]</code>から<code>Option[Int]</code>へ変換できるということになるが、もちろんそんなことはなく、<code>inj</code>を定義するためには次のいずれかの条件を満す必要がある。</p>
+<ol>
+<li><code>Inject[F, F]</code></li>
+<li><code>Inject[F, Coproduct[F, G, ?]]</code><a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a></li>
+<li><code>Inject[F, G]</code>を仮定して、<code>Inject[F, Coproduct[H, G, ?]]</code><a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a></li>
+</ol>
+<p>これらのパターンについて、どうして関数<code>inj</code>が定義できるのかを考える。 まず、最初のケースは元の型と行き先の型が同じ<code>F</code>なので、受け取ったものをそのまま返せばよい。 次のパターンは、<code>F</code>は<code>G</code>について何も知らなかったとしても、<code>Coproduct[F, G, ?]</code>の左側は<code>F</code>であるのでこちらへ行くことができる。 最後のパターンは、まず<code>Inject[F, G]</code>を仮定するということについて考える。これを仮定するということは<code>F[A]</code>を引数に取り<code>G[A]</code>を返す関数<code>inj</code>が存在するということになる。この<code>inj</code>を用いてまず<code>F[A]</code>を<code>G[A]</code>へ変換すれば、<code>Coproduct[H, G, ?]</code>の右側となるので、こちらへ行くことができる。 これをScalaのコードへ翻訳すると次のようになる。</p>
+<pre><code class="scala">object Inject {
+  implicit def reflexive[F[_]:  Functor] = new Inject[F, F] {
+    def inj[A](a: F[A]): F[A] = a
+  }
+
+  implicit def left[F[_]: Functor, G[_]: Functor] =
+    new Inject[F, ({type L[A] = Coproduct[F, G, A]})#L] {
+      def inj[A](a: F[A]): Coproduct[F, G, A] = Coproduct[F, G, A](Left(a))
+    }
+
+  implicit def right[F[_]: Functor, G[_]: Functor, H[_]: Functor](implicit I: Inject[F, G]) =
+    new Inject[F, ({type L[A] = Coproduct[H, G, A]})#L] {
+      def inj[A](a: F[A]): Coproduct[H, G, A] = Coproduct[H, G, A](Right(I.inj(a)))
+    }
+}</code></pre>
+<p>先ほど<code>Coproduct</code>で作った<code>example</code>を次のように書きなおせる<a href="#fn4" class="footnote-ref" id="fnref4"><sup>4</sup></a>。</p>
+<pre><code class="scala">def inject[A](a: Twitter[A])(implicit I: Inject[Twitter, TwitterWithDelete]) =
+  I.inj(a)
+def inject[A](a: DeleteOfTwitter[A])(implicit I: Inject[DeleteOfTwitter, TwitterWithDelete]) =
+  I.inj(a)
+
+val example2: Free[TwitterWithDelete, Unit] =
+  more(inject(Update("new tweet", more(inject(Delete("<id>", done()))))))</code></pre>
+<p>さて、なんとかDSLを作ることができたので、後はこれのインタープリターを実装すればよい。</p>
+<h2>インタープリター</h2>
+<p>CoproductやInjectを使っても、インタープリターは同じように書ける。</p>
+<pre><code class="scala">def runTwitterWithDelete[A](dsl: Free[TwitterWithDelete, A], env: UseWSClient with UseOAuthCred): Unit = dsl match {
+  case Done(a) => ()
+  case More(x) => x.value match {
+    case Left(a) => a match {
+      case Fetch(screenName, f) =>
+        for {
+          fws <- fetchUserByScreenName(screenName).run(env)
+        } yield runTwitterWithDelete(f(fws), env)
+      case Update(status, next) =>
+        for {
+          _ <- updateStatus(status).run(env)
+        } yield runTwitterWithDelete(next, env)
+    }
+    case Right(b) => b match {
+      case Delete(id, next) => ???
+    }
+  }
+}</code></pre>
+<p>ただ、これはFreeモナドとCoproductの入れ子構造がそのまま反映されており、もし<code>TwitterWithDelete</code>に対して別のものをさらにInjectした際に大変面倒になる。そこで<code>Twitter</code>と<code>DeleteOfTwitter</code>に対するそれぞれのインタープリターを<strong>自然変換</strong>を用いて合成するという方法もあるが、この記事では割愛する<a href="#fn5" class="footnote-ref" id="fnref5"><sup>5</sup></a>。</p>
+<h1>Tagless Final</h1>
+<p>Tagless Finalとは、プログラム言語に埋め込みDSLのインタープリターを作るためなどに用いられる手法である。こちらの手法は今まで行ってきたFreeモナドやCoproductとは一線を画する手法である。</p>
+<h2>InitialとFinal</h2>
+<p>この文章では次のような代数的データ型（ADT）を構築し、それのインタープリターを作成する伝統的な方法を<strong>Initial</strong>な方法と呼ぶ</p>
+<blockquote>
+<pre><code class="scala">sealed trait Twitter[A]
+
+case class Fetch[A](screenName: String, a: Future[WSResponse] => A) extends Twitter[A]
+case class Update[A](status: String, a: A) extends Twitter[A]</code></pre>
+</blockquote>
+<p>一方で、Tagless Finalではこのような代数的データ型を作成せずにインタープリターを構築する。Intialなアプローチと比較して次のような利点がある。</p>
+<ul>
+<li>ケースクラスのインスタンス化が必要ない</li>
+<li>GADT（一般化代数的データ型）が必要ない<a href="#fn6" class="footnote-ref" id="fnref6"><sup>6</sup></a></li>
+<li>Expression Problemを回避することができる</li>
+<li>Higher-order Abstract Syntax（HOAS：高階抽象構文）<a href="#fn7" class="footnote-ref" id="fnref7"><sup>7</sup></a>を使うことができる</li>
+</ul>
+<p>この記事では主にExpression Problemの回避に注目してInitialな方法と比較する。</p>
+<h2>Expression Problemの回避</h2>
+<p>Tagless FinalではFreeモナドなどを用いたInitialなアプローチで行なわれていたような、<code>Twitter</code>のような代数的データ型を定義しない。Tagless Finalでは型クラスを用いてDSLを表現する。</p>
+<pre><code class="scala">trait TwitterSYM[R[_]] {
+  def string(str: String): R[String]
+  def fetch(screenName: R[String]): R[WSResponse]
+  def getScreenName(str: R[WSResponse]): R[String]
+  def update(status: R[String]): R[String]
+}</code></pre>
+<p>これを用いて、実際のインタープリターを次のように実装する。</p>
+<pre><code class="scala">object TwitterSYMInterpreter {
+  type Twitter[A] = Reader[UseWSClient with UseOAuthCred, A]
+
+  implicit val twitterSYMInterpreter = new TwitterSYM[Twitter] {
+    def string(str: String): Twitter[String] = pure(str)
+
+    def fetch(screenName: Twitter[String]): Twitter[WSResponse] =
+      for {
+        sn <- screenName
+        env <- ask
+      } yield {
+        Await.result(
+          env.client.url("https://api.twitter.com/1.1/users/show.json")
+            .withQueryString("screen_name" -> sn)
+            .sign(env.cred)
+            .get(),
+          Duration.Inf
+        )
+      }
+    
+    def getScreenName(res: Twitter[WSResponse]): Twitter[String] =
+      for {
+        raw <- res
+        env <- ask
+      } yield (raw.json \ "screen_name").as[String]
+
+    def update(status: Twitter[String]): Twitter[String] =
+      for {
+        s <- status
+        env <- ask
+      } yield {
+        val res = Await.result(
+          env.client.url("https://api.twitter.com/1.1/statuses/update.json")
+            .sign(env.cred)
+            .post(Map("status" -> Seq(s))),
+          Duration.Inf
+        )
+
+        (res.json \ "id_str").as[String]
+      }
+  }
+}</code></pre>
+<p>まず型<code>Twitter</code>を定義している。これまでのFreeモナドの例でも同じ名前の型が登場したが、それとは異なるので注意して欲しい。 Tagless Finalはこのように、インタープリターを型クラス<code>TwitterSYM</code>のインスタンスとして定義し、これらのインスタンスを呼び出すという形をとる。</p>
+<pre><code class="scala">def string(str: String)(implicit T: TwitterSYM[Twitter]): Twitter[String] =
+  T.string(str)
+
+def fetch(screenName: Twitter[String])(implicit T: TwitterSYM[Twitter]): Twitter[WSResponse] =
+  T.fetch(screenName)
+
+def getScreeName(res: Twitter[WSResponse])(implicit T: TwitterSYM[Twitter]): Twitter[String] =
+  T.getScreenName(res)
+
+def update(status: Twitter[String])(implicit T: TwitterSYM[Twitter]): Twitter[String] =
+  T.update(status)</code></pre>
+<p>これだけでもはやDependency InjectionのためのDSLとしての機能を持っている。次のように使うことができる。</p>
+<pre><code class="scala">update(
+  getScreeName(fetch(string("_yyu_")))
+).run(DefaultEnvironment.defaultEnvironment)</code></pre>
+<p>さて、それではFreeの時のようにツイートを削除する機能を後から追加する。先ほど定義した<code>TwitterSYM</code>は型クラスなので、次のように新たな型クラスを追加するだけでExpression Problemを回避することができる。</p>
+<pre><code class="scala">trait DeleteSYM {
+  def delete(id: Twitter[String]): Twitter[Boolean]
+}</code></pre>
+<p>そして、インタープリターもこれのインスタンスとして定義する。</p>
+<pre><code class="scala">object DeleteSYMInterpreter {
+  type Twitter[A] = Reader[UseWSClient with UseOAuthCred, A]
+
+  implicit val deleteInterpreter = new DeleteSYM[Twitter] {
+    def delete(id: Twitter[String]): Twitter[Boolean] =
+      for {
+        idStr <- id
+        env   <- ask
+      } yield {
+        val res = Await.result(
+          env.client.url(s"https://api.twitter.com/1.1/statuses/destroy/${idStr}.json")
+            .sign(env.cred)
+            .post(Map("id" -> Seq(idStr))),
+          Duration.Inf
+        )
+
+        res.status == 200
+      }
+  }
+
+  def delete(id: Twitter[String])(implicit T: DeleteSYM[Twitter]): Twitter[Boolean] =
+    T.delete(id)
+}</code></pre>
+<p>次のように組み合せられる。</p>
+<pre><code class="scala">delete(
+  update(
+    getScreeName(fetch(string("_yyu_")))
+  )
+).run(DefaultEnvironment.defaultEnvironment)</code></pre>
+<p>このように、Tagless Finalは先ほどInjectなどを用いて行った処理の追加を比較的簡単に行うことができる。</p>
+<h2>Higher-order Abstract Syntax</h2>
+<p>Higher-order Abstract Syntax（HOAS）とは、変数を束縛するような処理をターゲット言語<a href="#fn8" class="footnote-ref" id="fnref8"><sup>8</sup></a>に実装する際に、束縛する変数を対象言語のインタープリターなどが取り扱うのではなくて、ホスト言語（Scala）の機能を直接使って実装するテクニックのことである。 例えばこのDSLに変数を束縛して後の式で使うための構文<code>let</code>を使用して、OCamlのように書きたいとする。</p>
+<pre><code class="ocaml">let a = string("_yyu_") in
+let b = fetch(a)        in
+let c = getScreeName(b) in
+let d = update(c)       in delete(d)</code></pre>
+<p>このように<code>a</code>や<code>b</code>といった変数に処理の結果を束縛するような機能をDSLとして提供したい時にHOASは便利である。なぜなら、今回の例では変数名を全て別にしたが、実際にはある変数と同じ変数名が使われることがあり、それらを区別するためには<a href="https://ja.wikipedia.org/wiki/%E3%83%89%E3%83%BB%E3%83%96%E3%83%A9%E3%83%B3%E3%83%BB%E3%82%A4%E3%83%B3%E3%83%87%E3%83%83%E3%82%AF%E3%82%B9">De Bruijn Index</a>などを用いてプログラムの中にある変数を数字へ変換する必要があるなど、変数束縛の処理は一般的に手間がかかる。ところが、HOASを用いれば変数はScalaの変数をそのまま用いるので、変数の管理をDSLのインタープリターやコンパイラーがする必要はない。 では、実際にTwitterのDSLにHOASの<code>let</code>文を用意する。まず、次のような型クラスを作る。</p>
+<pre><code class="scala">trait LetInSYM[R[_]] {
+  def let[A, B](a: => R[A])(l: R[A => B]): R[B]
+  def in[A, B](a: R[A] => R[B]): R[A => B]
+}</code></pre>
+<p>そしてインタープリターを次のように実装する。</p>
+<pre><code class="scala">object LetInSYMInterpreter {
+  type Twitter[A] = Reader[UseWSClient with UseOAuthCred, A]
+
+  implicit val letInInterpreter = new LetInSYM[Twitter] {
+    def let[A, B](ta: => Twitter[A])(tf: Twitter[A => B]): Twitter[B] =
+      for {
+        a <- ta
+        f <- tf
+      } yield f(a)
+
+    def in[A, B](f: Twitter[A] => Twitter[B]): Twitter[A => B] = {
+      reader(e => (x: A) => f(pure(x)).run(e))
+    }
+  }
+
+  def let[A, B](a: => Twitter[A])(f: Twitter[A => B])(implicit T: LetInSYM[Twitter]): Twitter[B] =
+    T.let(a)(f)
+
+  def in[A, B](f: Twitter[A] => Twitter[B])(implicit T: LetInSYM[Twitter]): Twitter[A => B] =
+    T.in(f)
+}</code></pre>
+<p>次のように用いる。</p>
+<pre><code class="scala">let (string("_yyu_")) (in (a =>
+let (fetch(a))        (in (b =>
+let (getScreeName(b)) (in (c =>
+let (update(c))       (in (d =>
+  delete(d)
+)))))))).run(DefaultEnvironment.defaultEnvironment)</code></pre>
+<p>このように、変数を用いているにも関わらず、変数を取り扱う部分をインタープリターに書かなくてもよく実装が大変楽になる。</p>
+<h1>Inject <em>vs</em> Tagless Final</h1>
+<h2>Tagless Finalにおけるパターンマッチ</h2>
+<p>Freeモナドを用いた場合、<code>Fetch</code>や<code>Delete</code>といったDSLの命令に対応するケースクラスでパターンマッチができるが、一方でTagless Finalにはケースクラスに相当するものが存在しないので、木構造のデータを取り扱えないように一見すると思える。しかし、それについては解決策が存在する。これについて詳しく知りたい方は<a href="http://okmij.org/ftp/tagless-final/course/lecture.pdf">Typed Tagless Final Interpreters</a>を参照して欲しい。</p>
+<h2>Olegさんの指摘</h2>
+<p>Lambda-the-Ultimateというサイトに、<a href="http://okmij.org/ftp/tagless-final/JFP.pdf">Tagless Finalの論文</a>を発表した著者の一人であるOlegさんによる<a href="http://lambda-the-ultimate.org/node/4394#comment-68060">Expression problem solutions in Haskell</a>という投稿がある。</p>
+<blockquote>
+<p>Tagless-final approach also easily solves the expression problem, both in the first-order and higher-order cases. In the higher-order case, tagless-final permits (very convenient) higher-order abstract syntax. `Data Types a la Carte'<a href="#fn9" class="footnote-ref" id="fnref9"><sup>9</sup></a> or other initial encodings cannot handle HOAS because of the contra-variant occurrences of the recursive data type.</p>
+</blockquote>
+<p>これによると、Coproductなどを用いたInitialなアプローチではHOASを取り扱えないと述べられている。再帰的なデータ型ではHOASを取り扱えないという根拠はよく分からないが、少なくともOlegさんはこのように主張している。</p>
+<h1>まとめ</h1>
+<p>個人的な感想としては、Tagless Finalの方がInjectやCoproductを使ってDSLを構成するよりもシンプルに思える。この記事でInjectとTagless Finalの性能評価を行う予定であったが、記事が長くなったので次の機会にしようと思う。Tagless Finalを用いたDSLがDependency Injectionのために使われる未来もあるかもしれない。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="https://gist.github.com/gakuzzzz/147c520e32177fea75f0">Free-ScalikeJDBC から見る合成可能なDSLの作り方</a></li>
+<li><a href="https://dl.dropboxusercontent.com/u/4588997/ReasonablyPriced.pdf">Compositional Application Architecture With Reasonably Priced Monads</a></li>
+<li><a href="https://github.com/Kinokkory/wiwinwlh-jp/wiki/%E3%82%A4%E3%83%B3%E3%82%BF%E3%83%97%E3%83%AA%E3%82%BF#hoas">インタプリタ</a></li>
+<li><a href="http://okmij.org/ftp/tagless-final/course/lecture.pdf">Typed Tagless Final Interpreters</a></li>
+<li><a href="http://www.cs.ru.nl/~W.Swierstra/Publications/DataTypesALaCarte.pdf">Data types à la carte</a></li>
+<li><a href="http://d.hatena.ne.jp/xuwei/20140618/1403054751">CoproductとInjectを使ったFree Monadの合成とExtensible Effects</a></li>
+<li><a href="http://okmij.org/ftp/tagless-final/JFP.pdf">Finally Tagless, Partially Evaluated: Tagless Staged Interpreters for Simpler Typed Languages</a></li>
+<li><a href="http://qiita.com/yyu/items/a2debfcde8f1915d5083">Dependency InjectionとDSL</a></li>
+<li><a href="http://lambda-the-ultimate.org/node/4394#comment-68060">Expression problem solutions in Haskell</a></li>
+<li><a href="http://halcat0x15a.github.io/slide/functional_scala/#/">関数型SCALA 型クラス編</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p><code>left</code>や<code>right</code>などといった大量の補助関数は、Scalaの型推論を補助するために定義されている。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p><code>Coproduct</code>の部分は実際、<code>({type λ[A] = Coproduct[F, G, A]})#λ</code>であるが、見やすさのためこのように表記した。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p>こちらも正しくは、<code>({type λ[A] = Coproduct[H, G, A]})#λ</code>であるが、見やすさのためこのように表記した。<a href="#fnref3" class="footnote-back">↩</a></p></li>
+<li id="fn4"><p><code>more</code>の部分が繰り返し表われていて、これを取り除きたかったが、Scala上で上手く型を付けることができなかった。<a href="#fnref4" class="footnote-back">↩</a></p></li>
+<li id="fn5"><p>この手法に興味がある方は、<a href="https://gist.github.com/runarorama/a8fab38e473fafa0921d">Compositional application architecture with reasonably priced monads</a>が参考になる。<a href="#fnref5" class="footnote-back">↩</a></p></li>
+<li id="fn6"><p>Scalaには一般化代数的データ型があるので、この部分は大きなメリットになり得ないかもしれない。他にこの機能を持つ言語として例えばOCamlやHaskell、Haxeがある。<a href="#fnref6" class="footnote-back">↩</a></p></li>
+<li id="fn7"><p>HOASについては後述する。<a href="#fnref7" class="footnote-back">↩</a></p></li>
+<li id="fn8"><p>実装の対象となるプログラム言語を指し、この記事ではTwitter用のDSLに対応する。<a href="#fnref8" class="footnote-back">↩</a></p></li>
+<li id="fn9"><p>この記事の前部で触れたCoproductとInjectによるExpression Problemの回避法について述べた論文。<a href="#fnref9" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

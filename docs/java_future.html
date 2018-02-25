@@ -1,0 +1,144 @@
+<h1>はじめに</h1>
+<p>ScalaでJavaのライブラリを利用することがしばしばあるが、ScalaのFutureとJavaのFutureは別である。Scalaを利用する時はJavaのFutureではなく、ScalaのFutureを利用したい。この記事ではJavaのFutureをScalaのFutureへ変換する方法について述べる。なお、この記事の完全なコードは次のGitHubリポジトリに置かれている。</p>
+<ul>
+<li><a href="https://github.com/y-yu/java-future-converter" class="uri">https://github.com/y-yu/java-future-converter</a></li>
+</ul>
+<h1>表記</h1>
+<p>この記事ではScalaの<code>Future</code>とJavaの<code>Future</code>を次のように区別する。</p>
+<pre><code class="scala">import java.util.concurrent.{Future => JavaFuture}
+import scala.concurrent.{Future => ScalaFuture}</code></pre>
+<p>つまり、<code>JavaFuture[A]</code>はJavaのFutureであり、一方で<code>ScalaFuture[A]</code>はScalaのFutureである。</p>
+<h1>直感的な実装</h1>
+<p>Stackoverflowなどでは次のようなコードで変換できると書かれている。</p>
+<pre><code class="scala">object BrokenJavaFutureConverter {
+  def toScala[A](jf: JavaFuture[A])(implicit ec: ExecutionContext): ScalaFuture[A] = {
+    val p: Promise[A] = Promise[A]
+
+    ec.execute(
+      new Runnable {
+        override def run() =
+          p.complete(
+            Try(jf.get())
+          )
+      }
+    )
+
+    p.future
+  }
+
+  implicit class RichJavaFuture[A](val jf: JavaFuture[A]) extends AnyVal {
+    def asScala(implicit ec: ExecutionContext): ScalaFuture[A] = toScala(jf)
+  }
+}</code></pre>
+<p>これはJavaの<code>Future</code>をExecutionContextに基づいて実行しScalaの<code>Promise</code>で受け取ってそれでScalaの<code>Future</code>を返すというコードである。これで一見良さそうで、次のように正常に動作するように見える。</p>
+<pre><code class="scala">class BrokenJavaFutureConverterSpec extends WordSpec {
+  import BrokenJavaFutureConverter._
+
+  trait SetupWithFixedThreadPool {
+    val timeout = Duration(1, TimeUnit.SECONDS)
+
+    val threadPool: ExecutorService = Executors.newFixedThreadPool(1)
+
+    val executor: Executor = new ExecutorFromExecutorService(threadPool)
+
+    implicit val ec: ExecutionContextExecutor = ExecutionContext.fromExecutor(executor)
+  }
+
+  "toScala" should {
+    "return the value" in new SetupWithFixedThreadPool {
+      val javaFuture: JavaFuture[Int] = threadPool.submit { () =>
+        Thread.sleep(200)
+        10
+      }
+
+      assert(Await.result(toScala(javaFuture), timeout) == 10)
+    }
+  }
+}</code></pre>
+<p>一方で次のように、作成したScalaのFutureを<code>recover</code>しようとすると正しく動作しない。</p>
+<pre><code class="scala">"not be able to recover the exception" in new SetupWithFixedThreadPool {
+  val javaFuture: JavaFuture[Int] = threadPool.submit{ () =>
+    throw new TestException()
+  }
+ 
+  val recover = javaFuture.asScala.recover {
+    case e: TestException => 10
+  }
+ 
+  assertThrows[ExecutionException](Await.result(recover, timeout))
+}</code></pre>
+<pre><code class="scala">class TestException(message: String = null, cause: Throwable = null)
+  extends Exception(message, cause)</code></pre>
+<p>上記のテストではJavaのFutureは実行時に例外<code>TestException</code>を送出し、それを<code>ScalaFuture#recover</code>で変換しているはずだが、これの結果を<code>Await#result</code>で取り出すと例外<code>ExecutionException</code>が送出される。このように、JavaのFutureは実行時の例外を<code>ExecutionException</code>でラップしてしまう。これではScalaのFutureとして<code>recover</code>がやりずらいので改善を考える。</p>
+<h1><code>ExecutionException</code>をアンラップする</h1>
+<p>次のようなコードで先ほどの問題を解決する。</p>
+<pre><code class="scala">object JavaFutureConverter {
+  def toScala[A](jf: JavaFuture[A])(implicit ec: ExecutionContext): ScalaFuture[A] = {
+    val p: Promise[A] = Promise[A]
+
+    ec.execute { () =>
+      p.complete(
+        Try(jf.get()) match {
+          case Failure(e: ExecutionException) =>
+            Failure(e.getCause)
+          case x =>
+            x
+        }
+      )
+    }
+
+    p.future
+  }
+
+  implicit class RichJavaFuture[A](val jf: JavaFuture[A]) extends AnyVal {
+    def asScala(implicit ec: ExecutionContext): ScalaFuture[A] = toScala(jf)
+  }
+}</code></pre>
+<p>これはJavaのFutureを<code>get</code>したものを<code>Try</code>で包み、もし結果が<code>Failure</code>でかつ例外の型が<code>ExecutionException</code>である場合は、<code>getCause</code>を利用してアンラップするようにしている。こうすることで次のように<code>recover</code>が動作する。</p>
+<pre><code class="scala">"be able to recover the exception" in new SetupWithFixedThreadPool {
+  val javaFuture: JavaFuture[Int] = threadPool.submit { () =>
+    throw new TestException()
+  }
+ 
+  val recover = javaFuture.asScala.recover {
+    case e: TestException => 10
+  }
+ 
+  assert(Await.result(recover, timeout) == 10)
+}</code></pre>
+<h1><code>ForkJoinPool</code>による問題</h1>
+<p>これでよいものができたかに見えたが、調べたところ<code>ForkJoinPool.commonPool()</code>といった方法で作成された<code>ExecutorService</code>を利用するとこれは次のように正しく動作しないことがあると分った。</p>
+<pre><code class="scala">trait SetupWithForkJoinPool {
+  val timeout = Duration(1, TimeUnit.SECONDS)
+ 
+  val forkJoinPool: ExecutorService = ForkJoinPool.commonPool()
+ 
+  val executor: Executor = new ExecutorFromExecutorService(forkJoinPool)
+ 
+  implicit val ec: ExecutionContextExecutor = ExecutionContext.fromExecutor(executor)
+}
+
+"return RuntimeException despite it returns IOException if you use the ForkJoinPool executor" in new SetupWithForkJoinPool {
+  val javaFuture: JavaFuture[Unit] = forkJoinPool.submit { () =>
+    throw new IOException()
+  }
+ 
+  assertThrows[RuntimeException](Await.result(javaFuture.asScala, timeout))
+}</code></pre>
+<p>これは<code>IOException</code>を送出しているにも関わらず、<code>RuntimeException</code>にラップされていることを示している。このように、この<code>JavaFutureConverter#toScala</code>は利用する<code>ExecutorService</code>によっては正しく動作しないことがあることに注意が必要である。もしこのコードを本番で利用する場合は、そのコードがどのような方法で作成した<code>ExecutorService</code>を利用しているのかを調べて、その<code>ExecutorService</code>を利用したテストを実行してからこのコードを利用するべきである。</p>
+<h1>がくぞさんからのアドバイス</h1>
+<p>がくぞさんから次のようなコードでもよいという意見をいただいた。</p>
+<blockquote class="twitter-tweet" data-lang="ja"><p lang="ja" dir="ltr">Future(jf.get()).transform {<br>  case Failure(e: ExecutionException) =&gt; Failure(e.getCause)<br>  case x =&gt; x<br>}<br>で同じになるかもです</p>&mdash; がくぞ (@gakuzzzz) <a href="https://twitter.com/gakuzzzz/status/872580192996216832">2017年6月7日</a></blockquote>
+<script async src="//platform.twitter.com/widgets.js" charset="utf-8"></script>
+<p><code>JavaFutureConverter#toScala</code>は<code>ExecutionContext</code>を暗黙に受け取ってそれでJavaのFutureを実行するが、ScalaのFutureも同じような動作だったのでこちらの方がシンプルであるという理由でこちらに修正した。</p>
+<pre><code class="scala">object JavaFutureConverter {
+  def toScala[A](jf: JavaFuture[A])(implicit ec: ExecutionContext): ScalaFuture[A] = {
+    ScalaFuture(jf.get()).transform {
+      case Failure(e: ExecutionException) =>
+        Failure(e.getCause)
+      case x => x
+    }
+  }
+}</code></pre>
+<h1>まとめ</h1>
+<p>JavaのFutureをScalaのFutureへ変換するのは思っていたよりも難しいということが分かった。もしこれよりもよい方法があれば、気軽にこの記事のコメントなどで指摘して欲しい。</p>

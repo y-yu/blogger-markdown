@@ -1,0 +1,80 @@
+<p><strong>よりよい実装を作りました。</strong> → <a href="http://qiita.com/yyu/items/bd6e205e801fb653a9cc" class="uri">http://qiita.com/yyu/items/bd6e205e801fb653a9cc</a></p>
+<h1>はじめに</h1>
+<p><strong>ActionCont</strong>とは継続モナド<code>Cont[R, A]</code>の型<code>A</code>に<a href="https://www.playframework.com/">Play</a>のコントローラーの結果を表す型<code>Result</code>を組み合わせた<code>Cont[Future[Result], A]</code>のことである。このActionContは継続モナドの力を用いて柔軟にコントローラーを合成するために用いられる。この記事ではまず、このActionContについて軽く紹介した後に、既存のActionContではカバーできない点について言及し、それを解決するために今回作成した<code>ActionCont.recoverWith</code>について説明する。</p>
+<h1>ActionContとエラー処理</h1>
+<p>ActionContとは“<a href="http://qiita.com/pab_tech/items/fc3d160a96cecdead622">継続モナドを使ってWebアプリケーションのコントローラーを自由自在に組み立てる</a>”で導入された<strong>継続モナド</strong>の一種である。このActionContにはエラーを処理するための<code>recover</code>という関数が用意されており、それは次のようになっている。</p>
+<pre><code class="scala">object ActionCont { 
+  def recover[A](actionCont: ActionCont[A])(pf: PartialFunction[Throwable, Future[Result]])(implicit executor: ExecutionContext): ActionCont[A] =
+    ActionCont(f => actionCont.run(f).recoverWith(pf))
+  }
+}</code></pre>
+<p>これは、次のように使うことができる。</p>
+<pre><code class="scala">def getPostParameter(request: Request[AnyContent]): ActionCont[PostParameters] = ???
+
+for {
+  postParameters <- ActionCont.recover(getPostParameter(request)){
+    case NonFatal(e) =>
+      Future.successful(Results.BadRequest("error!"))
+  }
+} yield ???</code></pre>
+<p>これはエラー（つまりは<code>Future.failed(???)</code>）が発生し次第、即<code>Future[Result]</code>の値を打ち返して以降の処理をストップする。これはこれで良いが、<code>ActionCont.recover</code>だけではカバーできない状況がある。</p>
+<h1><code>ActionCont.recover</code>では難しいこと</h1>
+<p>ただし、エラーの中には回復可能なものがある。例えば次のような処理を考える。</p>
+<ol>
+<li>クエリパラメーターからCSRFトークンを取得する
+<ul>
+<li>成功したら後続にCSRFトークンを渡す</li>
+</ul></li>
+<li>(1)に失敗したら、リクエストボディからJSON形式でCSRFトークンを取得する</li>
+<li>(2)に失敗したら、<code>Results.BadRequest</code>となる</li>
+</ol>
+<p>このような処理を書きたい場合、<code>ActionCont.recover</code>を用いたとしても、直ちに<code>Result</code>になってしまうので実現できない。そこで、次のようなインターフェースを持つ<code>ActionCont.recoverWith</code>を作成する。</p>
+<pre><code class="scala">def recoverWith[A](actionCont: ActionCont[A])(pf: PartialFunction[Throwable, ActionCont[A]])(implicit ec: ExecutionContext): ActionCont[A] =</code></pre>
+<p><code>ActionCont.recover</code>とは部分関数として受けとる値の型が変っている。<code>ActionCont.recover</code>が<code>PartialFunction[Throwable, Future[Result]]</code>であるのに対して、<code>ActionCont.recoverWith</code>では<code>PartialFunction[Throwable, ActionCont[A]]</code>となっている。これがあれば、先ほどの処理は次のように書くことができる。</p>
+<pre><code class="scala">def getCsrfTokenFromQueryParameter(request: Request[AnyContent]): ActionCont[CsrfToken] = ???
+
+def getCsrfTokenFromRequestBody(request: Request[AnyContent]): ActionCont[CsrfToken] = ???
+
+for {
+  csrfToken <- ActionCont.recoverWith(getCsrfTokenFromQueryParameter(request)) {
+    case NonFatal(e) =>
+      getCsrfTokenFromRequestBody(request)
+  }
+} yield ???</code></pre>
+<p>この<code>ActionCont.recoverWith</code>をどのように実装すればよいだろうか。</p>
+<h1>仮の継続を渡して<code>ActionCont</code>を実行する<code>fakeRun</code></h1>
+<p>まず、継続モナドについておさらいしておくと、継続モナドは「後続の処理を受け取って、それを使って処理を行う」という能力を持つ。そのため、<code>ActionCont.recoverWith</code>の実装としてシンプルに次のような実装を思いつく。</p>
+<ol>
+<li>失敗するかもしれない<code>ActionCont</code>に継続を渡して実行する
+<ul>
+<li>もし成功したら、この<code>ActionCont</code>を使う</li>
+</ul></li>
+<li>失敗したら、代わりの<code>ActionCont</code>に継続を渡す</li>
+</ol>
+<p>すると、この実装では継続を合計で<strong>2回</strong>実行していることになる。確かにCSRFトークンを取得する処理ならば2回実行したところで問題はなさそうだが、もし後続の処理（継続）に「データベースに書き込む」といった副作用を伴う処理があったとしたら大変まずいことになってしまう。なので、ここではやや不完全になることが予想されるが、次のような実装を行うことにする。</p>
+<ol>
+<li>失敗するかもしれない<code>ActionCont</code>に<strong>仮の継続</strong>を渡して実行する
+<ul>
+<li>もし成功したら、この<code>ActionCont</code>に本物の継続を渡す</li>
+</ul></li>
+<li>失敗したら、代わりの<code>ActionCont</code>に継続を渡す</li>
+</ol>
+<p>この仮の継続を渡す関数<code>fakeRun</code>は次のように定義する。</p>
+<pre><code class="scala">def fakeRun[A](actionCont: ActionCont[A])(implicit ec: ExecutionContext): Future[Result] =
+  actionCont.run(value => Future.successful(Results.Ok))</code></pre>
+<p>これを使えば、<code>ActionCont.recoverWith</code>を作ることができる。</p>
+<h1><code>ActionCont.recoverWith</code>を作る</h1>
+<p>次のような定義になる。</p>
+<pre><code class="scala">def recoverWith[A](actionCont: ActionCont[A])(pf: PartialFunction[Throwable, ActionCont[A]])(implicit ec: ExecutionContext): ActionCont[A] =
+  fromFuture(fakeRun(actionCont).map(_ => actionCont).recover(pf)).flatten</code></pre>
+<p>まず、<code>fakeRun(actionCont)</code>で受け取った<code>ActionCont</code>を仮に実行している。そして、その結果が成功であったとしたら<code>map</code>で結果を捨てつつ元の<code>ActionCont</code>を返している。もし結果がエラー（<code>Future.failed(???)</code>）だとしたら、<code>Future.recover</code>と受け取った部分関数<code>pf</code>で<code>ActionCont</code>にしている。すると、<code>Future[ActionCont[A]]</code>という型の値が得られるので、これを<code>fromFuture</code><a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>で<code>ActionCont[ActionCont[A]]</code>にする。あとは二重になった<code>ActionCont</code>を<code>flatten</code>で削れば最終的に<code>ActionCont[A]</code>となる。</p>
+<h1><code>ActionCont.recoverWith</code>の課題</h1>
+<p>上で述べたように、<code>ActionCont.recoverWith</code>に渡されるActionContは<code>fakeRun</code>で実行するので、<strong>後続の処理の結果によってエラーを出す</strong>ようなActionContに対して使うと思わぬ挙動をする可能性がある。しかし、僕の考える限り後続の処理の結果によってエラーを出すという状況があまり考えられなかったので、実用上は問題にならないと思われる。</p>
+<h1>まとめ</h1>
+<p>やや課題が残ったものの、これによって失敗したら別のActionContに差し換えるという操作を実装することができた。もしこれより良い方法を思いついた方がいらっしゃれば、気軽にコメントなどで教えて欲しいと思う。</p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p><a href="http://qiita.com/pab_tech/items/fc3d160a96cecdead622">継続モナドを使ってWebアプリケーションのコントローラーを自由自在に組み立てる</a>を参照。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>
