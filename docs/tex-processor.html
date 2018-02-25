@@ -1,0 +1,103 @@
+<p>この記事は<a href="http://www.adventar.org/calendars/187">TeX &amp; LaTeX Advent Calendar 2013</a>の15日目の記事です。</p>
+<ul>
+<li>14日目：<a href="http://ansuz.sooke.bc.ca/entry/268">mskalaさん</a></li>
+<li>16日目：<a href="http://qiita.com/PowerPC7450/items/b34b080dd941af689b56">PowerPC7450さん</a></li>
+</ul>
+<h1>処理系とは</h1>
+<p>TeXの処理系とはTeXファイルをぶち込むとDVIなりPDFなりが出てくるプログラムのことです。実際に使ったことがなくても、だいたい次のようなものを聞いたことがあるのではないかと思います。</p>
+<ul>
+<li>pTeX</li>
+<li>XeTeX</li>
+<li>pdfTeX</li>
+<li>LuaTeX</li>
+</ul>
+<p>さて、ここで疑問なのがこれらは一体何が違うのかということですね。何を使うかで迷っている人は、とりあえずこれらの違いだけでも説明出来たらいいなと。</p>
+<h1>pTeXとその仲間たち + e-TeX</h1>
+<p>e-TeXが入っているのは、こっちの方が説明が分かりやすいと思ったからです。</p>
+<h2>pTeX</h2>
+<p><strong>pTeX</strong> はTeXに日本語向けの様々な機能を追加した処理系です。代表的なものを挙げると、次のようなものが追加されています。</p>
+<ul>
+<li>縦書き組版</li>
+<li>日本語禁則処理</li>
+<li>日本語と欧文が混在した時の処理</li>
+</ul>
+<p>つまり処理系を改造して日本語を扱うための機能を実装したということですね。理系の文書ではよくある日本語と欧文の混在もpTeXからサポートされていることになります。</p>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/ff9e9621-e184-f067-6895-409f3eaa7997.png" alt="ptex.png" /></p>
+<h2>e-TeX</h2>
+<p>ところがこの時、pTeXとは別の考えでTeXを改造しようと考えた人達がいました。例えば次のような拡張です。</p>
+<ul>
+<li>レジスタ（変数的なサムシング）の上限を増加</li>
+<li>新たな条件式を追加</li>
+</ul>
+<p>このような拡張を積んだ新たな処理系として <strong>e-TeX</strong> が開発されました。こうして、TeXからフォークした処理系が二つ誕生するわけです。</p>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/d1ced10f-871c-12c8-db4b-784dfbc31a1f.png" alt="etex.png" /></p>
+<p>TeXで文書を書く人も、レジスタを自分で定義したり何か条件式を使って組版を制御したりする人はあまりいないかもしれませんが、このような機能は複雑な組版を行う上では時々役に立ちます。</p>
+<h2>e-pTeX</h2>
+<p>この二つの処理系（pTeXとe-TeX）をマージしようという人間が現われました。こうして二つの処理系を合体させた <strong>e-pTeX</strong> が誕生します。</p>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/90fcc696-2ee8-bf73-901c-c4f3e32c6aea.png" alt="eptex.png" /></p>
+<p>ということで、現在日本語組版ではこのe-pTeXが用いられていることが多いと思います。 例えばターミナルで<code>platex</code>というコマンドを打つと、</p>
+<pre><code>This is e-pTeX, Version 3.1415926-p3.4-110825-2.6 (utf8.euc) (TeX Live 2013)
+ restricted \write18 enabled.</code></pre>
+<p>などと表示されると思います。e-pTeXを使っているということですね。</p>
+<h2>upTeX, e-upTeX</h2>
+<p>さて、これで一件落着かと思いきや、そう事は簡単ではありません。pTeXの拡張で日本語が扱えるようになったといっても、それはJIS第一・第二水準までを扱えるようになったということで、近年は常識となりつつあるUnicodeには対応していませんでした。 このままだと例えば「髙（はしごたか）」など特殊な文字や、あるいは中国語・韓国語などがうまくいかないわけです。さらに、TeXの文書ファイルをUTF-8などで書いていると不味いことになってしまうなど不自由が募ります。</p>
+<p>そこでまず、<code>nkf</code>などを用いて入力されるTeXファイルをEUCか何かに変換して、その物体を従来のpTeXなどに捩じ込むという解決策が提案されました。 最近<code>platex</code>コマンドを使う時にはオプションとして<code>--kanji=utf8</code>を使うと思いますが、これは内側でこういう変換が行なわれています。 これでひとまずユーザーがいちいち<code>nkf</code>を使う必要はなくなりましたが、どのみち「髙」などが上手くいかない状況に変化はありません。 例えば次のようなものをe-pTeXで処理すると「髙」が亜空間へと消滅します。</p>
+<pre><code class="tex">\documentclass{jsarticle}
+
+\begin{document}
+「髙（はしごたか）」
+\end{document}</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/17e18216-a38d-c6d4-abe0-90365a4757b9.png" alt="スクリーンショット 2013-12-14 17.34.12.png" /></p>
+<p>そこで <em>otf</em> パッケージというものが提案され、文字コードのようなものを直接入力することでなんとかしようということになりました。こんな感じです。</p>
+<pre><code class="tex">\documentclass{jsarticle}
+\usepackage{otf}
+
+\begin{document}
+「\UTF{9AD9}（はしごたか）」
+\end{document}</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/c12b0d0a-1084-ae97-d8d1-011924680fba.png" alt="スクリーンショット 2013-12-14 17.34.56.png" /></p>
+<p>ただ、これはこれで正直微妙です。なのでpTeXを改造して、内部文字コードをUnicodeにしようという試みが行われました。これが <strong>upTeX</strong> です。 そうしたら後はe-TeXとのマージですね。e-TeXとマージされたものが <strong>e-upTeX</strong> となります。</p>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/5338e137-4441-686a-d7d9-da47b79a5862.png" alt="euptex.png" /></p>
+<p>これらを用いると、そのまま「髙」を出力出来ます。</p>
+<pre><code class="tex">\documentclass[uplatex]{jsarticle}
+
+\begin{document}
+「髙（はしごたか）」
+\end{document}</code></pre>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/0009a3bf-b2dd-051d-e33e-002f9f3a7030.png" alt="スクリーンショット 2013-12-14 17.35.20.png" /></p>
+<h1>XeTeX</h1>
+<p><strong>XeTeX</strong> もe-TeXの処理系を改造したものの一つです。</p>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/2aa19eca-5c52-d602-4364-f9974b1491fc.png" alt="xetex.png" /></p>
+<p>XeTeXの特筆すべき機能は次のようなものです。</p>
+<ul>
+<li>Unicodeを扱える</li>
+<li>フォントに関する拡張</li>
+</ul>
+<p>Unicodeに関する苦労は先ほどupTeXの部分で取り上げたので省略します。</p>
+<p>XeTeXは今まで紹介した処理系とはフォントに対する処理が異なります。というのも、今までに紹介した処理系はどれも「DVIファイルを出力して、フォントに関してはDVIを処理するアプリにおまかせ」という方針でした。何故ならフォントの扱いはデバイスに依存する情報ですので、フォントを扱うというのはDVIの理念である&quot;device independent&quot;に反します。 ですので、e-pTeXなどではフォント埋め込みPDFを作る際は、</p>
+<ol>
+<li>TeX側の設定（ <em>otf</em> パッケージとかでやる）</li>
+<li>dvipdfmxなどの設定（<code>kanji-config-updmap</code>とか）</li>
+</ol>
+<p>という二つの手間が必要で、どうやればいいのか混乱することがままあります。 ですがXeTeXはこのデバイス非依存のDVIを生成することをそもそも諦め、デバイスに依存する代わりにデバイスで使えるフォントをそのまま使うことで面倒な設定を抜きにフォントを使用出来るようになっています。 ちなみに、XeTeXは直接PDFが生成されているように見えますが、実際は中でXDVなるDVIを拡張した形式を一旦経由して、その後 <em>xdvipdfmx</em> というdvipdfmxを改造した物体を用いてPDFを生成しています。</p>
+<p>XeTeXを用いた組版は<a href="http://zrbabbler.sp.land.to/xelatex.html">XeLaTeX で日本語する件について</a>などで述べられていまして、日本語組版に対応しているようです。ただpTeX系と違って処理系を日本語へ特化させたというわけではないです。</p>
+<h1>pdfTeX</h1>
+<p>これも(e-)TeXを改造した処理系で、欧文圏では高い人気があるようです。</p>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/8c1bd39e-985f-370b-96e0-10532eea33ec.png" alt="pdftex.png" /></p>
+<p>名前の通り、これはDVIファイルを経由せずに直接PDFを吐きます。これには次のような利点があります。</p>
+<ul>
+<li>PDFを操作するための命令がTeXファイルから使える</li>
+</ul>
+<p>e-pTeXなどの処理系はあくまでDVIを作ってDVIからPDFへはdvipdfmxなどに任せるというスタンスでしたが、pdfTeXはもはやDVIを作らないので、PDFに影響を与えるプリミティブな命令が用意されています。これらは例えばリンクの出力や、複雑な図の作成で効果を発揮します。</p>
+<h1>LuaTeX</h1>
+<p>さて、 <strong>LuaTeX</strong> とはpdfTeXの派生で、名前にある通りLuaのコードをTeXファイルに入れることが出来ます。pdfTeXと、内部エンコーディングをUnicodeにした <strong>Omega</strong> という処理系の血統です。</p>
+<p><img src="https://qiita-image-store.s3.amazonaws.com/0/10815/ebc320a6-985a-adf2-8315-cb75360710bd.png" alt="luatex.png" /></p>
+<p>こちらもpTeX系とは違って処理系を直接改造して日本語化対応しているわけではありませんが、<a href="http://oku.edu.mie-u.ac.jp/~okumura/texwiki/?LuaTeX-ja">LuaTeX-ja</a>など、日本語組版をがんばろうという活動が盛んに行われています。またpdfTeXの後継ということがもう決定していることもあって、将来への安心感もあります。</p>
+<h1>まとめ</h1>
+<p>さて、色々な処理系の開発経緯が明らかになったわけですが、ここで私の独断と偏見で感想を書きます。</p>
+<h2>pTeX系</h2>
+<p>まず、pTeX系の中ではUnicode対応などで <strong>e-upTeX</strong> がオススメ感があります。 <em>jsclasses</em> など日本語組版に必要なパッケージも <strong>e-upTeX</strong> に対応しているので、e-upTeXがいいのではないでしょうか。 ただ私としては特に不都合がなければ、無理にe-pTeXからe-upTeXにしなくともよいと思います。</p>
+<h2>その他</h2>
+<p><strong>XeTeX</strong> か <strong>LuaTeX</strong> の二択だと思います。pdfTeXで日本語組版をしている話は全然聞かないです。</p>
+<p>私はXeTeXを使っていた時がありますが、日本語組版を行う場合はzr_tex8rさんが作成した<a href="http://zrbabbler.sp.land.to/zxjatype.html">ZXjatype</a>を使うことになると思います。このZXjatypeに使われている<a href="http://www.ctan.org/pkg/xecjk">xeCJK</a>というパッケージがありますが、これがどうも中国語に特化しているようで、あまり日本語と仲良く出来ていない感じがあります。 ただ、XeTeXのフォントをカジュアルに使えるという点はとても素晴らしいです。なので私は変なフォントを使いたい所だけXeTeXで作って、出来あがったPDFをe-pTeXなどで読み込んだり、あるいは逆にe-pTeXなどで作ったPDFをXeTeXで読み込み加工するという方法を取っています。</p>
+<p>ならLuaTeXなのかという話ですが、私自身はLuaTeXを全然使ったことがないので何とも言い難いです。ただ、本当にLuaが書けます。「Real World LuaTeX —Luaで書ける喜び—」ですね。 時々使う機会としては、<a href="http://oku.edu.mie-u.ac.jp/~okumura/texwiki/?TikZ">TikZ</a>で図を作る時でしょうか。多分pTeX系でも問題ないと思うのですが、pdfTeX系とTikZは仲が良いらしいので、TikZで作った図をpdfTeXやLuaTeXを使ってコンパイルして、出来あがったPDFをpTeX系の処理系で読み込むといった感じの使い方をしています。 今回の記事にある各処理系の派生グラフみたいな図もTikZで作ってpdfTeXでコンパイルして、出来たPDFを<code>convert</code>コマンドでPNGに変換しています。</p>
