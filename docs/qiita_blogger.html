@@ -1,0 +1,101 @@
+<h1>はじめに</h1>
+<p>最近Qiitaの数式レンダリングが崩れてしまったので、一時的に数式の多い記事を<a href="https://www.blogger.com/">Blogger</a>へ移すことにした。一方で、BloggerはQiitaのようにMarkdownによる投稿ができない。この記事はQiitaのMarkdownで書かれた記事をなるべくそのままPandocでHTMLへ変換しBloggerへ投稿する方法を述べる。 なお、この記事で利用したプログラムは下記のリポジトリから入手できる。</p>
+<ul>
+<li><a href="https://github.com/y-yu/blogger-markdown" class="uri">https://github.com/y-yu/blogger-markdown</a></li>
+</ul>
+<p>なお、この記事はQiitaとBloggerにそれぞれ投稿されている。</p>
+<ul>
+<li>Blogger: <a href="https://mentalpoker.blogspot.com/2018/02/qiitablogger.html" class="uri">https://mentalpoker.blogspot.com/2018/02/qiitablogger.html</a></li>
+<li>Qiita: <a href="https://qiita.com/yyu/items/412529d75c2b9f89a930" class="uri">https://qiita.com/yyu/items/412529d75c2b9f89a930</a></li>
+</ul>
+<h1>Bloggerの準備</h1>
+<h2>MathJaxの導入</h2>
+<p>Bloggerはデフォルトでは<a href="https://www.mathjax.org/">MathJax</a>が使えないため、テーマを編集してMathJaxを導入する。次をテンプレートのどこかに入れればよい。</p>
+<pre><code class="html">&lt;script type='text/x-mathjax-config'&gt;
+  MathJax.Hub.Config({
+    extensions: [&quot;tex2jax.js&quot;],
+    jax: [&quot;input/TeX&quot;, &quot;output/HTML-CSS&quot;],
+    tex2jax: {
+      inlineMath: [ [&#39;$&#39;,&#39;$&#39;], [&quot;\\(&quot;,&quot;\\)&quot;] ],
+      displayMath: [ [&#39;$$&#39;,&#39;$$&#39;], [&quot;\\[&quot;,&quot;\\]&quot;] ],
+      processEscapes: true
+    },
+    &quot;HTML-CSS&quot;: { availableFonts: [&quot;TeX&quot;] }
+  });
+&lt;/script&gt;
+&lt;script async='' src='https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-MML-AM_CHTML' type='text/javascript'&gt;&lt;/script&gt;</code></pre>
+<h2>highlight.jsの準備</h2>
+<p>コードハイライティングには<a href="https://highlightjs.org/">highlight.js</a>を使うことにした。これもテーマに次を足せばよい。</p>
+<pre><code class="html">&lt;link href='//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.12.0/styles/default.min.css' rel='stylesheet'/&gt;
+&lt;script src='//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.12.0/highlight.min.js'/&gt;
+&lt;script&gt;hljs.initHighlightingOnLoad();&lt;/script&gt;</code></pre>
+<h2>Twitter Cardsの準備</h2>
+<p>Twitter Cardsも入れたかったので、次をテーマに足した。</p>
+<pre><code class="html">&lt;meta content='summary' name='twitter:card'/&gt;
+&lt;meta content='@_yyu_' name='twitter:site'/&gt;
+&lt;meta content='@_yyu_' name='twitter:creator'/&gt;
+&lt;meta expr:content='data:blog.url' name='twitter:url'/&gt;
+&lt;meta expr:content='data:blog.metaDescription' name='twitter:description'/&gt;
+&lt;meta expr:content='data:blog.postImageThumbnailUrl' name='twitter:image'/&gt;
+&lt;b:if cond='data:blog.pageName == &quot;&quot;'&gt;
+    &lt;meta expr:content='data:view.title' name='twitter:text:title'/&gt;
+&lt;b:else/&gt;
+    &lt;meta expr:content='data:blog.pageName' name='twitter:text:title'/&gt;
+&lt;/b:if&gt;</code></pre>
+<p><code>@_yyu_</code>となっているところは、適宜自分のTwitter IDに置き換えてほしい。</p>
+<h1>Pandocの準備</h1>
+<p>PandocはmacOSならば<a href="https://brew.sh/">homebrew</a>から次のように導入できる。</p>
+<pre><code class="console">$ brew install pandoc</code></pre>
+<h2>pandocfilitersのインストール</h2>
+<p>また、<a href="https://github.com/jgm/pandocfilters">pandocfilters</a>というPython製のライブラリも利用するため、pipで次のようにインストールする。</p>
+<pre><code class="console">$ pip install pandocfilters</code></pre>
+<p>冒頭のGitHubリポジトリを利用する場合は、<a href="https://github.com/pyenv/pyenv">pyenv</a>と<a href="https://github.com/pypa/virtualenv">virtualenv</a>を利用して次のようにしてもよい。</p>
+<pre><code class="console">$ cd /path/to/blogger-markdown/git-repository
+$ pyenv virtualenv 2.7.10 blogger-markdown
+$ pyenv local blogger-markdown
+$ pip install -r requirements.txt</code></pre>
+<h1>Qiita記事のダウンロード</h1>
+<p>Qiitaの記事はURLの末尾に<code>.md</code>を付けることでMarkdownソースコードを得ることができる。ただし、冒頭に記事のタイトルが付与されており、これはPandocによる変換においては不要なため<code>sed</code>を利用して次のようにする。</p>
+<pre><code class="console">$ curl https://qiita.com/yyu/items/efcf471ce9b97e885957.md | sed -e '1d' &gt; articles/quantum_gacha.md</code></pre>
+<p>このようにして変換元のMarkdownソースコードが得られる。</p>
+<h1>HTMLへの変換</h1>
+<p>Pandocを利用して次のようにする。</p>
+<pre><code class="console">$ pandoc -f markdown_github+footnotes+header_attributes-hard_line_breaks -t html --mathjax --filter ./filters/code.py articles/guantum_gacha.md -o docs/quantum_gacha.html</code></pre>
+<p>ただし<code>./filters/code.py</code>は次のようなプログラムである。</p>
+<pre><code class="python">#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+ 
+import os
+from pandocfilters import toJSONFilter, CodeBlock, RawBlock, Str, RawInline
+
+def mkMathBlock(code):
+    return RawBlock('html', "\\[\n" + code + "\n\\]")
+
+def mkCodeBlock(classes, code):
+    code = code.replace('&lt;', '&lt;').replace('&gt;', '&gt;')
+    if (len(classes) == 0):
+        return RawBlock('html', "&lt;pre&gt;&lt;code&gt;" + code + "&lt;/code&gt;&lt;/pre&gt;")
+    else:
+        c = (classes[0].split(':'))[0]
+        return RawBlock('html', "&lt;pre&gt;&lt;code class=\"" + c + "\"&gt;" + code + "&lt;/code&gt;&lt;/pre&gt;")
+ 
+def filter(key, value, fmt, meta):
+    if key == 'CodeBlock':
+        [[ident, classes, kvs], code] = value
+        if 'math' in classes:
+            return mkMathBlock(code)
+        else:
+            return mkCodeBlock(classes, code)
+        
+if __name__ == "__main__":
+    toJSONFilter(filter)</code></pre>
+<p>このプログラムは次の2つを行っている。</p>
+<ul>
+<li>コードブロックのプログラムが<code>math</code>である場合、MathJaxとしてHTMLを出力する</li>
+<li>コードブロックがその他である場合、プログラムとしてHTMLを出力する</li>
+</ul>
+<p>このようにしてQiitaの<code>math</code>コードブロックを適切にHTMLへ変換する。</p>
+<h1>Bloggerへの投稿</h1>
+<p>最後に出力されたHTMLをコピーして投稿する。ただし記事のタイトルは手動でQiitaから持ってくる。</p>
+<h1>まとめ</h1>
+<p>このようにすることで、Qiitaの資産をBloggerへ移行することができる。ただ、Qiitaにはたくさんの思い出があるので数式レンダリングの不具合をなるべく早めに修正してほしい。</p>
