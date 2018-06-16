@@ -1,0 +1,117 @@
+<h1>はじめに</h1>
+<p>最近Slack Bot作りに興味を持ち、どうせSlack Botを作るならば最も使い慣れた言語であるScalaで作りたくなった。また、<a href="https://qiita.com/pab_tech/items/fc3d160a96cecdead622">継続モナドを使ってWebアプリケーションのコントローラーを自由自在に組み立てる</a>を読んで、継続モナドを利用することでSlack Botもより柔軟に作れるのではないかという考えのもと、Scalaを利用して作ってみた。この記事では、まずこのSlack Botの動かし方を説明し、すごく簡単にこのSlack Botでどのように処理を書くかについて述べる。</p>
+<ul>
+<li><a href="https://github.com/y-yu/slackcont" class="uri">https://github.com/y-yu/slackcont</a></li>
+</ul>
+<h2>発表資料</h2>
+<p>この内容について発表した資料が下記にある。</p>
+<ul>
+<li><a href="https://y-yu.github.io/slackcont-slide/slackcont.pdf">アニメーションあり版</a></li>
+<li><a href="https://y-yu.github.io/slackcont-slide/slackcont_without_animation.pdf">アニメーションなし版</a></li>
+</ul>
+<p><img width="70%" src="https://qiita-image-store.s3.amazonaws.com/0/10815/48cf8e0e-2fe3-e5d3-0e26-9c835b879aa5.png"></p>
+<h1>動かしてみる</h1>
+<p>次の手順で動かすことができる。</p>
+<ol>
+<li>リポジトリをGitで持ってくる</li>
+<li><code>./src/main/resources/default.conf</code>をエディターで開く</li>
+<li><p>次の<code>token</code>のところにSlack Botのトークンを書き込む</p>
+<pre><code>slack {
+  token = "&lt;Your Slack Bot Token&gt;"
+  duration = "5"
+}</code></pre>
+<ul>
+<li><code>&lt;Your Slack Bot Token&gt;</code>を消して書き換える</li>
+</ul></li>
+<li><p>Javaをインストールして<code>./sbt run Main</code>を実行する</p></li>
+</ol>
+<h1>中身の説明</h1>
+<h2><code>SlackCont</code></h2>
+<p>まず、<code>SlackCont</code>というデータ構造について説明する。これは次のように定義されている。</p>
+<pre><code class="scala">case class SlackEnv(client: SlackClient, ec: ExecutionContext)
+
+type SlackCont[A] = SlackEnv =&gt; ContT[Future, Unit, A]</code></pre>
+<p>これはSlackにメッセージを送信したりする<code>SlackClient</code>と、<code>Future</code>を操作するために利用する<code>ExecutionContext</code>の組である<code>SlackEnv</code>という型を引数にとって継続モナド<code>ContT</code>を返す関数のエイリアスである。関数にせず<code>ReaderT</code>でもいいかと思ったが、モナドが重なりすぎていて大変になると思い、このようにした。</p>
+<p>このモナドを利用して、次のようなSlack Botをどう書けるのかを見てみる。</p>
+<ol>
+<li>メッセージの内容が<code>Hello</code>かどうかを検査する</li>
+<li>もしメッセージが<code>Hello</code>ならば書き込み中ステータスにする</li>
+<li>2秒間待機する</li>
+<li><code>World</code>という文字列を投稿する</li>
+</ol>
+<h2><code>HelloWorldCont</code></h2>
+<p>もしメッセージが<code>Hello</code>に一致するならば継続に<code>World</code>を渡す処理は次のように書ける。</p>
+<pre><code class="scala">object HelloWorldCont {
+  def apply(message: Message): SlackCont[String] = SlackCont[String] { env =&gt;
+    implicit val ec: ExecutionContext = env.ec
+
+    k =&gt;
+      for {
+        _ &lt;- if (message.text == "Hello") {
+          k("World")
+        } else {
+          Future.successful(())
+        }
+      } yield ()
+  }
+}</code></pre>
+<ul>
+<li><a href="https://github.com/y-yu/slackcont/blob/master/src/main/scala/com/github/yyu/slackcont/cont/impl/HelloWorldCont.scala" class="uri">https://github.com/y-yu/slackcont/blob/master/src/main/scala/com/github/yyu/slackcont/cont/impl/HelloWorldCont.scala</a></li>
+</ul>
+<p>このように<code>Hello</code>でなかった場合は継続<code>k</code>を利用せず、そのまま成功を返して終了する。</p>
+<h2><code>TypingCont</code></h2>
+<p>Slackでタイピング状態を送信する処理は次のように書ける。</p>
+<pre><code class="scala">class TypingCont @Inject()(
+  threadSleep: ThreadSleep
+) {
+  def apply(channelId: String, msec: Long): SlackCont[Unit] = SlackCont { env =&gt;
+    implicit val ec: ExecutionContext = env.ec
+
+    k =&gt;
+      env.client.indicateTyping(channelId) // 失敗を無視する
+      threadSleep.sleep(msec)
+      k(())
+  }
+}</code></pre>
+<ul>
+<li><a href="https://github.com/y-yu/slackcont/blob/master/src/main/scala/com/github/yyu/slackcont/cont/impl/TypingCont.scala" class="uri">https://github.com/y-yu/slackcont/blob/master/src/main/scala/com/github/yyu/slackcont/cont/impl/TypingCont.scala</a></li>
+</ul>
+<p>まず、スリープする処理はテストのときに邪魔なのでGuiceでDIしている。そして、Slackクライアントにタイピングする命令を送り、その結果に関わらず継続を実行する。</p>
+<h2><code>SayCont</code></h2>
+<p>引数に渡されたチャンネルに、メッセージを投稿する処理は次のように書ける。</p>
+<pre><code class="scala">object SayCont {
+  def apply(sendChannelId: String, sendMessage: String): SlackCont[Long] = SlackCont[Long] { env =&gt;
+    implicit val ec: ExecutionContext = env.ec
+
+    k =&gt;
+      for {
+        n &lt;- env.client.sendMessage(SlackSendMessage(sendChannelId, sendMessage))
+        r &lt;- k(n)
+      } yield r
+  }
+}</code></pre>
+<ul>
+<li><a href="https://github.com/y-yu/slackcont/blob/master/src/main/scala/com/github/yyu/slackcont/cont/impl/SayCont.scala" class="uri">https://github.com/y-yu/slackcont/blob/master/src/main/scala/com/github/yyu/slackcont/cont/impl/SayCont.scala</a></li>
+</ul>
+<p>この処理では<code>env.client.sendMessage</code>は<code>Future[Long]</code>を返すので、もし投稿に失敗して<code>Future.failed</code>となった場合には<code>Future</code>の<code>flatMap</code>が失敗し継続は実行されない。</p>
+<h2><code>Main</code></h2>
+<p>それではこれらを組み合せて実際に動くようにしてみよう。</p>
+<pre><code class="scala">val injector = Guice.createInjector(new DefaultModule)
+
+val slackRunner = injector.getInstance(classOf[SlackRunner])
+
+val typingCont = injector.getInstance(classOf[TypingCont])
+
+slackRunner.onMessage(msg =&gt;
+  for {
+    world &lt;- HelloWorldCont(msg)
+    _ &lt;- typingCont(msg.channel, 2000)
+    _ &lt;- SayCont(msg.channel, world)
+  } yield ()
+)</code></pre>
+<ul>
+<li><a href="https://github.com/y-yu/slackcont/blob/master/src/main/scala/com/github/yyu/slackcont/main/Main.scala" class="uri">https://github.com/y-yu/slackcont/blob/master/src/main/scala/com/github/yyu/slackcont/main/Main.scala</a></li>
+</ul>
+<p>このように、比較的直感的に処理を組み合わせていくことができる。</p>
+<h1>まとめ</h1>
+<p>このように継続モナドを組み合せてSlack Botを作ってみたが、まだ機能がそんなにないので継続を利用したおもしろい処理を書けていない。もしそういう機能を実装できたら、また追記したいと思う。</p>

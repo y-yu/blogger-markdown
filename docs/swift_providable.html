@@ -1,0 +1,170 @@
+<h1>はじめに</h1>
+<p><a href="https://twitter.com/nonchalant0303">@Nonchalant</a>さんの<a href="https://github.com/Nonchalant/FactoryProvider">FactoryProvider</a>というSwiftのテスト支援ライブラリーを見て、もしかしたらデータの作成をもうちょっと面白くできるのではないかと考えて、彼のライブラリーを<strong>Stateモナド</strong>と<strong>HList</strong>を利用して改造してみたのでそれをここに示す。この記事ではHListとStateモナドについて軽く解説し、どのようにこれらを利用しているかについて説明する。なお、この記事の完全なソースコードは下記のリポジトリにある。</p>
+<ul>
+<li><a href="https://github.com/y-yu/FactoryProvider" class="uri">https://github.com/y-yu/FactoryProvider</a></li>
+</ul>
+<p>この記事を読んで分かないことや質問などがある場合には、気軽にコメントなどで教えて欲しい。</p>
+<h1>使い方</h1>
+<p>作成したライブラリーの詳しい説明する前に、これがどのように使えるのかについて説明する。たとえば次のようにテスト用のデータを作ることができる。</p>
+<pre><code class="swift">let a =
+    String.provide() &gt;&gt;&gt;
+    Bool.provide() &gt;&gt;&gt;
+    Optional&lt;Int&gt;.provide() &gt;&gt;&gt;
+    end()
+
+let (b, _) = a.run(0)
+
+print(b.head, b.tail.head, b.tail.tail.head as Any)</code></pre>
+<p>これを実行すると次のように表示される。</p>
+<pre><code>0 false Optional(2)</code></pre>
+<p>たとえば同じ<code>Int</code>を連続で生成しても、違う値となるようになっている。</p>
+<pre><code class="swift">let c =
+    Int.provide() &gt;&gt;&gt;
+    Int.provide() &gt;&gt;&gt;
+    Int.provide() &gt;&gt;&gt;
+    end()
+
+let (d, _) = c.run(0)
+
+print(d.head, d.tail.head, d.tail.tail.head as Any)</code></pre>
+<p>これは次のようになる。</p>
+<pre><code>0 1 2</code></pre>
+<p>これがどのようなトリックで作られているかについて解説する。ちなみに再代入可能な値をグローバルに更新している、といったものではない。</p>
+<h1>状態を用いたテストデータの生成</h1>
+<p>ここでは<code>Int</code>の<code>provide</code>メソッドを例とするが、もし<code>Int.provide</code>が引数を取ってよいとしたら、これは簡単に実装できそうだ。</p>
+<pre><code class="swift">protocol Providable {
+    associatedtype S
+
+    static func provide(s: S) -&gt; (Self, S)
+}</code></pre>
+<p>プロトコル<code>Providable</code>はそれに準拠した型の値を、状態を表す型<code>S</code>を利用して生成する。ただ、結果は自身の型である<code>Self</code>と次の状態を返すようになっている。たとえば<code>Providable</code>の状態を<code>Int</code>、そして生成したい型も<code>Int</code>で実装すると次のようになる。</p>
+<pre><code class="swift">extension Int: Providable {
+    typealias S = Int
+
+    static func provide(s: Int) -&gt; (Int, Int) {
+        return (s, s + 1)
+    } 
+}</code></pre>
+<p>これを使えば次のように書ける。</p>
+<pre><code class="swift">let (i1, s1) = Int.provide(0)
+let (i2, s2) = Int.provide(s1)
+let (i3, s3) = Int.provide(s2)
+
+print(i1, i2, i3)</code></pre>
+<p>すると次のようになる。</p>
+<pre><code>0 1 2</code></pre>
+<p>このようにすることで、別々となるような<code>Int</code>型のデータを作ることができる。</p>
+<h1>Stateモナド</h1>
+<p>たしかにこれでもよいといえばよいが、変数がたくさんあって大変である。これを解決させるために<strong>Stateモナド</strong>を利用する。Stateモナドとは次のようなデータ構造である。</p>
+<pre><code class="swift">public struct State&lt;S, A&gt; {
+    public let run : (S) -&gt; (A, S)
+    
+    public init(_ run : @escaping (S) -&gt; (A, S)) {
+        self.run = run
+    }
+    
+    func flatMap&lt;B&gt;(_ f: @escaping (A) -&gt; State&lt;S, B&gt;) -&gt; State&lt;S, B&gt; {
+        return State&lt;S, B&gt; {
+            (s: S) -&gt; (B, S) in
+                let (a, s1) = self.run(s)
+                return f(a).run(s1)
+        }
+    }
+    
+    func map&lt;B&gt;(_ f: @escaping (A) -&gt; B) -&gt; State&lt;S, B&gt; {
+        return State&lt;S, B&gt; {
+            (s: S) -&gt; (B, S) in
+                let (a, s1) = self.run(s)
+                return (f(a), s1)
+        }
+    }
+}</code></pre>
+<p>構造体<code>State</code>の第1型パラメータ<code>S</code>は状態の型であり、そして第2型パラメータ<code>A</code>は生成される結果の型である。これを利用して、プロトコル<code>Providable</code>を次のように書きかえることができる。</p>
+<pre><code class="swift">public protocol Providable {
+    associatedtype S
+    
+    static func provide() -&gt; State&lt;S, Self&gt;
+}</code></pre>
+<p>つまり、メソッド<code>provide</code>は型<code>S</code>の状態を利用してプロトコルを実装した型を返すので、さきほどの引数を取る実装とそれほど変っていない。同じように<code>Int</code>で実装すると次のようになる。</p>
+<pre><code class="swift">extension Int: Providable {
+    public typealias S = Int
+    
+    public static func provide() -&gt; State&lt;Int, Int&gt; {
+        return State&lt;Int, Int&gt;{
+            (s: Int) -&gt; (Int, Int) in (s, s + 1)
+        }
+    }
+}</code></pre>
+<p><code>provide</code>メソッドが状態を取るかわりに、構造体<code>State</code>のラムダ式<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>として状態が引数で渡されて結果と次の状態を返すという構造は変っていない。これを利用して次のように書くことができる。</p>
+<pre><code class="swift">let ((i1, i2, i3), _) =
+    Int.provide().flatMap { i1 in
+        Int.provide().flatMap { i2 in
+            Int.provide().map { i3 in (i1, i2, i3) }
+        }
+    }.run(0)
+
+print(i1, i2, i3)</code></pre>
+<pre><code>0 1 2</code></pre>
+<p>これで最初にあった変数がたくさん必要となる問題は解決した。</p>
+<h1>HListと<code>&gt;&gt;&gt;</code>演算子</h1>
+<p>関数がネストして大変なことになっている。そこで<strong>HList</strong>を利用してこれを解決する。HListとは次のようなプロトコルである。</p>
+<pre><code class="swift">public protocol HList { }
+public struct HNil: HList {
+    init() { }
+}
+
+public struct HCons&lt;H, T: HList&gt;: HList {
+    public let head: H
+    public let tail: T
+    
+    public init(_ h: H, _ t: T) {
+        self.head = h
+        self.tail = t
+    }
+}</code></pre>
+<p>プロトコル<code>HList</code>は2つの構造体<code>HNil</code>と<code>HCons</code>を持つ。これは、端的に言えば次のような特徴を持つ。</p>
+<ul>
+<li>一般のリストとは違い、どのような型のデータも挿入することができる</li>
+<li>どの型がリスト上のどの位置（インデックス）にあるかを型レベルで記憶している</li>
+</ul>
+<p>たとえば<code>HCons&lt;Int, HCons&lt;String, HCons&lt;Bool, HNil&gt;&gt;&gt;</code>とは、先頭の値の型が<code>Int</code>であり、かつ2番目の値の型が<code>String</code>であり、そして3番目の値の型が<code>Bool</code>であることを示している。これを用いて<code>&gt;&gt;&gt;</code>演算子を次のように定義する。</p>
+<pre><code class="swift">precedencegroup Right {
+    associativity: right
+}
+
+infix operator &gt;&gt;&gt;: Right
+
+public func &gt;&gt;&gt;&lt;S, A, T: HList&gt;(_ ma: State&lt;S, A&gt;, _ mb: State&lt;S, T&gt;) -&gt; State&lt;S, HCons&lt;A, T&gt;&gt; {
+    return ma.flatMap {
+        (a: A) -&gt; State&lt;S, HCons&lt;A, T&gt;&gt; in
+            mb.map {
+                (t: T) -&gt; HCons&lt;A, T&gt; in HCons&lt;A, T&gt;(a, t)
+            }
+    }
+}
+
+public func end&lt;S&gt;() -&gt; State&lt;S, HNil&gt; {
+    return State&lt;S, HNil&gt; {
+        s -&gt; (HNil, S) in (HNil(), s)
+    }
+}</code></pre>
+<p><code>&gt;&gt;&gt;</code>演算子は左側に型<code>A</code>を作るStateモナドをとり、左側にはなんらかのHListである<code>T</code>を作るStateモナドを取り、結果として<code>HCons&lt;A, T&gt;</code>という型の値を返すStateモナドを返す。そして関数<code>end</code>は<code>HNil</code>を作るStateモナドを返す。これにより、最初の例のような方法でネストを抑えながら次々に値を生成できる。</p>
+<pre><code class="swift">let c =
+    Int.provide() &gt;&gt;&gt;
+    Int.provide() &gt;&gt;&gt;
+    Int.provide() &gt;&gt;&gt;
+    end()
+
+let (d, _) = c.run(0)
+
+print(d.head, d.tail.head, d.tail.tail.head as Any)</code></pre>
+<p>ちなみに型情報も失われていないので、IDEできちんと表示される。</p>
+<p><img width="294" alt="image" src="https://qiita-image-store.s3.amazonaws.com/0/10815/0157ba08-92b9-3b04-de2b-34cc633efc13.png"></p>
+<h1>まとめ</h1>
+<p>StateモナドとHListを利用することで、ネストが異常な量になるなどといったシンタクッス上の綺麗さも保ちつつ、しかし常に同じ値ではなく値を更新しながら作るといったことができるようになった。たとえば常に同じ値にしたい場合は、状態の型<code>S</code>を<code>Void</code>といった型にしてしまって、状態を使わずに作成することで達成できそうである。</p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>ラムダ計算の用語に則るならば、ここでは「ラムダ抽象」が適切ではあるが一般に浸透した言葉としてここでは「ラムダ式」とした。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>
