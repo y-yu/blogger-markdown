@@ -1,0 +1,191 @@
+<h1>はじめに</h1>
+<p><a href="https://swagger.io/">Swagger</a>はAPIドキュメントやモック、クライアントなどを様々なプログラム言語で作成できるツールである。API情報は特定のフォーマットに従うYAML/JSONファイルで与えることができる。ScalaやJavaのようなプログラム言語において、APIの情報はコントローラーの実装部分にアノテーションを付与することがあり、Swaggerもアノテーションを解釈してYAML/JSONを出力する機能がある。これを利用したsbtプラグインはいくつか作られているが、それらが筆者の要求する機能を持たなかったので新しいsbtプラグイン<a href="https://github.com/y-yu/sbt-swagger-meta">sbt-swagger-meta</a>を作成することとした。この記事ではSwaggerのAPI情報を記述するYAML/JSONを自作する際に苦労した点などについて述べる。なおこのプラグインは次のリポジトリで公開されている。</p>
+<ul>
+<li><a href="https://github.com/y-yu/sbt-swagger-meta" class="uri">https://github.com/y-yu/sbt-swagger-meta</a></li>
+</ul>
+<h1>既存のsbtプラグインの問題</h1>
+<p>アノテーションからSwaggerのファイルを作成するプラグインとしては次のようなものがある。</p>
+<ul>
+<li><a href="https://github.com/hootsuite/sbt-swagger">sbt-swagger</a></li>
+<li><a href="https://github.com/scalalandio/sbt-swagger-2">sbt-swagger-2</a></li>
+</ul>
+<p>これらの問題は次のようなものがある。</p>
+<dl>
+  <dt>YAMLファイルの出力ができない</dt>
+  <dd>筆者はJSONだけではなく、YAMLも出力したいと考えていた。しかしこれらのプラグインはJSONを出力する機構しか持たない。</dd>
+
+  <dt>sbt1.0とsbt0.13の両方で使いたい</dt>
+  <dd>筆者の用途ではsbt1.0とsbt0.13の両方で動かしたいという要求があったが、どちらかにしか対応していない。</dd>
+
+  <dt>更新が止っている</dt>
+  <dd>最終更新が古いので、利用することが躊躇われる。</dd>
+</dl>
+<p>これらの理由により新しいsbtプラグインを作成することした。</p>
+<h1>sbt-swagger-metaの使い方</h1>
+<p>たとえば次のようなScalaファイルがあるとする。</p>
+<pre><code class="scala">import io.swagger.annotations._
+import javax.ws.rs._
+import scala.annotation.meta.field
+
+@Path("/users") @Api(value = "/users")
+@Produces(Array("application/json"))
+object UserEndpoints {
+  @GET @Path("")
+  @ApiOperation(value = "Get the key with the supplied key ID.")
+  @Produces(Array("application/json"))
+  @ApiResponses(Array(
+    new ApiResponse(code = 200, message =
+      "Success. Body contains key and creator information.",
+      response = classOf[Response.User]
+    ),
+    new ApiResponse(code = 400, message =
+      "Bad Request. Errors specify: (snip)",
+      response = classOf[Response.BadRequest]),
+    new ApiResponse(code = 404, message = "Not Found.",
+      response = classOf[Response.NotFound])))
+  def getByEmail(email: String): Response.User = ???
+}
+
+sealed trait Response
+object Response {
+  case class User(
+    @(ApiModelProperty @field)(value = "email address") email: String
+  ) extends Response
+
+  case class BadRequest(
+    @(ApiModelProperty @field)(value = "error message") msg: String
+  ) extends Response
+
+  case class NotFound(
+    @(ApiModelProperty @field)(value = "error message") msg: String
+  ) extends Response
+}</code></pre>
+<ul>
+<li><a href="https://github.com/y-yu/sbt-swagger-meta/blob/4dddad35308bd64bef3e0c713726dff6b4885b5d/example/src/main/scala/UserEndpoints.scala" class="uri">https://github.com/y-yu/sbt-swagger-meta/blob/4dddad35308bd64bef3e0c713726dff6b4885b5d/example/src/main/scala/UserEndpoints.scala</a></li>
+</ul>
+<p>このファイルから次のようなYAMLが得られる。</p>
+<pre><code class="yaml">---
+swagger: "2.0"
+info:
+  description: ""
+  version: "2.0"
+  title: "API docs"
+tags:
+- name: "users"
+paths:
+  /users:
+    get:
+      tags:
+      - "users"
+      summary: "Get the key with the supplied key ID."
+      description: ""
+      operationId: "getByEmail_1"
+      produces:
+      - "application/json"
+      parameters:
+      - in: "body"
+        name: "body"
+        required: false
+        schema:
+          type: "string"
+      responses:
+        200:
+          description: "Success. Body contains key and creator information."
+          schema:
+            $ref: "#/definitions/User"
+        400:
+          description: "Bad Request. Errors specify: (snip)"
+          schema:
+            $ref: "#/definitions/BadRequest"
+        404:
+          description: "Not Found."
+          schema:
+            $ref: "#/definitions/NotFound"
+definitions:
+  User:
+    type: "object"
+    properties:
+      email:
+        type: "string"
+        description: "email address"
+  BadRequest:
+    type: "object"
+    properties:
+      msg:
+        type: "string"
+        description: "error message"
+  NotFound:
+    type: "object"
+    properties:
+      msg:
+        type: "string"
+        description: "error message"</code></pre>
+<h1>sbt-swagger-metaの作成で苦労したところ</h1>
+<p>それでは実際にsbt-swagger-metaを作るにあたって苦労したところをいくつか述べる。</p>
+<h2>アノテーションを変更してからYAML/JSONファイルを再生成しても変化しない</h2>
+<p>これは当初、次の方法で<code>PluginClassLoader</code>を得ていた。</p>
+<pre><code class="scala">val pluginClassLoader = classOf[com.wordnik.swagger.annotations.Api].getClassLoader.asInstanceOf[PluginClassLoader]</code></pre>
+<ul>
+<li><a href="https://github.com/hootsuite/sbt-swagger/blob/6ddb3e39f5548824d02bee5fcf9794ebc81041ad/src/main/scala/com/hootsuite/sbt/swagger/Sbt.scala#L58" class="uri">https://github.com/hootsuite/sbt-swagger/blob/6ddb3e39f5548824d02bee5fcf9794ebc81041ad/src/main/scala/com/hootsuite/sbt/swagger/Sbt.scala#L58</a></li>
+</ul>
+<p>ところが、<code>PluginClassLoader</code>はシングルトンであるためクラスローダーが変化せずアノテーションを変更してもsbtを再起動しない限り生成される<code>swagger.json</code>などが変更されない。そこで、<a href="https://twitter.com/xuwei-k">@xuwei-k</a>さんの<a href="https://xuwei-k.hatenablog.com/entry/20130310/1362897747">sbt の Task で、メインの任意のメソッドを実行してその結果を取得する</a>を参考に次のような方法でクラスローダーを作成するようにした。</p>
+<pre><code class="scala">val mainClassLoader = Internal.makeLoader(fullClasspath.map(_.data), classOf[Api].getClassLoader, scalaInstanceInCompile)
+val pluginClassLoader = Internal.makePluginClassLoader(mainClassLoader)
+
+pluginClassLoader.add(fullClasspath.files.map(_.toURI.toURL))</code></pre>
+<p>なお、<code>Internal</code>はsbt1.0とsbt0.13で<code>ClasspathUtilities</code>などのパスが変更されているため、その差を吸収するために次のように作成した。</p>
+<pre><code class="scala">private[sbtswaggermeta] object Internal {
+  def makeLoader(classpath: Seq[File], parent: ClassLoader, instance: ScalaInstance): ClassLoader
+    = internal.inc.classpath.ClasspathUtilities.makeLoader(classpath, parent, instance)
+
+  def makePluginClassLoader(classLoader: ClassLoader): PluginClassLoader = new PluginClassLoader(classLoader)
+}</code></pre>
+<pre><code class="scala">private[sbtswaggermeta] object Internal {
+  def makeLoader(classpath: Seq[File], parent: ClassLoader, instance: ScalaInstance): ClassLoader
+    = sbt.classpath.ClasspathUtilities.makeLoader(classpath, parent, instance)
+
+  def makePluginClassLoader(classLoader: ClassLoader): PluginClassLoader = new PluginClassLoader(classLoader)
+}</code></pre>
+<h2>swagger-scala-moduleを利用してもYAMLの生成が変になる</h2>
+<p><a href="https://github.com/swagger-api/swagger-scala-module">swagger-scala-module</a>はJavaで作られたSwaggerにScalaの<code>Option</code>や<code>Either</code>といった型のシリアライズ方法を教えるパッケージであるが、これがYAMLを出力するときに機能しなかった。調べると次のようにJSONの場合のみに変更していた。</p>
+<pre><code class="scala">object SwaggerScalaModelConverter {
+  Json.mapper().registerModule(new DefaultScalaModule())
+}</code></pre>
+<ul>
+<li><a href="https://github.com/swagger-api/swagger-scala-module/blob/0857176e44d6ce92cc31f11b247ee3df48cc18d7/src/main/scala/io/swagger/scala/converter/SwaggerScalaModelConverter.scala#L14-L16" class="uri">https://github.com/swagger-api/swagger-scala-module/blob/0857176e44d6ce92cc31f11b247ee3df48cc18d7/src/main/scala/io/swagger/scala/converter/SwaggerScalaModelConverter.scala#L14-L16</a></li>
+</ul>
+<p>そこで、やや強引だが次のようにYAMLにも反映させた。</p>
+<pre><code class="scala">class SwaggerScalaModelConverterWithYaml extends SwaggerScalaModelConverter
+
+object SwaggerScalaModelConverterWithYaml {
+  def apply: SwaggerScalaModelConverterWithYaml = {
+    Yaml.mapper().registerModule(DefaultScalaModule)
+    new SwaggerScalaModelConverterWithYaml()
+  }
+}</code></pre>
+<h2>exampleでsbtプラグインを利用する</h2>
+<p>sbt-swagger-metaはプラグイン本体と、<code>example</code>というフォルダにこのプラグインの利用例が入っている。このexampleでsbt-swagger-metaを利用するため、最初は<code>sbt publishLocal</code>して利用していたが、<a href="https://twitter.com/xuwei-k">@xuwei-k</a>さんの記事<a href="https://xuwei-k.hatenablog.com/entry/20120920/1348168081">sbt plugin作成時のデバック、テスト方法</a>では<code>sbt publishLocal</code>するのではない方法があった。ところが、これをやってみても上手く動作しない。しばらくネットの海を調べたところ、何かのプラグインで<code>example/project/plugins.sbt</code>に次のような記述をして解決していた。</p>
+<pre><code class="scala">lazy val root = Project("plugins", file(".")) dependsOn sbtSwaggerMeta
+
+lazy val sbtSwaggerMeta = ClasspathDependency(RootProject(file("..").getAbsoluteFile.toURI), None)</code></pre>
+<ul>
+<li><a href="https://github.com/y-yu/sbt-swagger-meta/blob/3468fcedc84d25e1da8e83abf183d352d7ba3d51/example/project/plugins.sbt" class="uri">https://github.com/y-yu/sbt-swagger-meta/blob/3468fcedc84d25e1da8e83abf183d352d7ba3d51/example/project/plugins.sbt</a></li>
+</ul>
+<p>これにより、<code>version.sbt</code>と<code>example/plugins.sbt</code>でバージョンを二重に管理しなくてもよくなったうえ、<code>sbt publishLocal</code>していたときはexample側のsbtを再起動しなければならないときがしばしばあったが、それもなくなり一石二鳥であった。</p>
+<h2>Sonatypeへパブリッシュする際のGPG鍵に空のパスフレーズを利用する</h2>
+<p>Sonatypeへパブリッシュする際には署名が必要であり、<a href="https://github.com/sbt/sbt-pgp">sbt-pgp</a>を利用すればこの作業を簡単に行うことができる。ところがsbt-pgpで鍵を作る際には空のパスフレーズで特に何も警告されないが、いざ<a href="https://github.com/sbt/sbt-release">sbt-release</a>を利用していざリリースをするときに次のように表示されて空のパスフレーズが入力できない。</p>
+<pre><code class="console">Please enter PGP passphrase (or ENTER to abort):</code></pre>
+<p>秘密鍵のパスフレーズを渡す手段として、sbt-pgpの<a href="https://www.scala-sbt.org/sbt-pgp/usage.html">ドキュメント</a>によれば<code>~/.sbt/pgp.credentials</code>というファイルを利用する方法が書かれていたが、これに空のパスフレーズを入れたものの上手くいかなかった。このため、筆者は次のようなファイル<code>pgp.sbt</code>を利用して次のようにした。</p>
+<pre><code class="scala">pgpPassphrase := Some(Array())</code></pre>
+<p>もし秘密鍵にパスフレーズを設定していないことを明かにしたくない場合は、Gitの機能で<code>pgp.sbt</code>が見えないようにしておくといいだろう<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>。</p>
+<h1>まとめ</h1>
+<p>これを利用してSwaggerのドキュメントをアノテーションから容易に得られるようになった。もうちょっと使ってみて、なにか追加するべき機能があればひきつづき実装していきたい。また、このプラグインを<a href="https://search.maven.org/">Sonatype</a>へパブリッシュする際には次の文章を参考にした。</p>
+<ul>
+<li><a href="https://qiita.com/kiris/items/b043a7582c22110d7097">自作のScalaライブラリをMaven Central Repositoryにリリースする</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>ただし、<code>sbt release</code>するときにUnstagedなファイルがあると処理が中断されてしまうので、何かよい手を考える必要がある。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

@@ -1,0 +1,56 @@
+<h1>はじめに</h1>
+<p>最近<code>lovelive-anime.jp</code>ドメインが何者かによって移管され一時的にその者の手に渡った。もともとの管理者によってすでに取り戻されたが、攻撃者は一時的にこのドメインに対する全権を握った。この記事では、あくまでも思考実験として攻撃者が他人のHTTPサイトを運用しているドメインの全権を握ったときに、攻撃者が<strong>HSTS(HTTP Strict Transport Security)</strong>を有効にしてしまった場合どうなるかについて考える。まずはHSTSについて簡単に説明し、そしてその後で今回筆者が考えた攻撃について議論し、最後にまとめを述べる。</p>
+<p>この記事を読んでわからないことや改善するべき点を見つけた場合は、気軽にコメントなどで指摘してほしい。</p>
+<h1>攻撃者によるHSTSの有効化</h1>
+<p>ここではHSTSに関する説明と、筆者が考える攻撃（？）について説明する。</p>
+<h2>HSTSとは</h2>
+<p><a href="https://ja.wikipedia.org/wiki/HTTP_Strict_Transport_Security">HSTS</a>とは、HTTPのレスポンスにおいて<code>Strict-Transport-Security</code>というヘッダーを付与することで、そのヘッダーに基づいてアクセスしたブラウザに次回以降HTTPの代わりにHTTPSを使うように伝達するセキュリティ機構である。</p>
+<h2>HSTS有効化攻撃（？）</h2>
+<p>攻撃者は今ドメインを完全に掌握していることから、次の手順でHSTSを有効化する。</p>
+<ol>
+<li>攻撃者のHTTPサーバーを用意し、次のような<code>Strict-Transport-Security</code>ヘッダーを返すように設定する
+<ul>
+<li><code>includeSubDomains</code>はサブドメインに対しても次回からHTTPS通信を強制させる</li>
+<li><code>max-age=31536000</code>の数値は適当に1年としたが、長ければなんでもよい</li>
+</ul>
+<pre><code>Strict-Transport-Security: max-age=31536000; includeSubDomains</code></pre></li>
+<li>奪ったドメインへのHTTPアクセスが（1）で用意したサーバーへ到達するようにDNSを編集する</li>
+</ol>
+<p>このようにすると、ユーザーが一度でも奪われたドメインへアクセスしてしまえば、次のアクセスからHTTPSを強制させることができる。HSTSはユーザーのブラウザに保存されるため、ドメインの管理者はたとえドメインを取り戻したとしても、このときにアクセスしてHSTSが有効となってしまったユーザーのためにHTTPSのサイトを運用するなどをしなければならなくなる。</p>
+<h1>攻撃が実行された後</h1>
+<p>このような攻撃が実行されてしまったとき、ドメインの正当な管理者はどうすればいいかについて議論する。</p>
+<h2>HSTSの停止</h2>
+<p>HSTSは<code>max-age=0</code>としたレスポンスヘッダーをブラウザへ返すことで無効にすることができる。ところがユーザーのブラウザはすでにHTTPSにしかアクセスしないようになっているため、ドメインの正当な管理者はドメインを取り戻した後に次のような操作を行う必要がある。</p>
+<ol>
+<li><p>正当な管理者はHTTPSのサイトを作成し、それが次のようなレスポンスヘッダーを返すようにする</p>
+<pre><code>Strict-Transport-Security: max-age=0; includeSubDomains</code></pre></li>
+</ol>
+<p>ただし、攻撃者は<code>includeSubDomains</code>を付与したHSTSレスポンスをばらまいてしまったので、次のようなユーザーを救済しなければならない。</p>
+<ol>
+<li>ユーザーは、攻撃者によって奪われた<code>attacked-domain.com</code>にアクセスしてしまい、HSTSがサブドメインに対しても有効な状態になってしまった</li>
+<li>ユーザーは普段<code>video.attacked-domain.com</code>を利用しており、<code>attacked-domain.com</code>することは少ない
+<ul>
+<li>ドメインの正当な管理者はこのドメイン上のサービスをHTTPS化することに技術上の課題を抱えており、直ちにHTTPS化ができない</li>
+</ul></li>
+<li>ユーザーのブラウザは<code>https://video.attacked-domain.com</code>へアクセスしてしまい、サービスを利用できない</li>
+</ol>
+<p>このような場合は、まず<code>*.attacked-domain.com</code>のどれにアクセスしても<code>Strict-Transport-Security: max-age=0</code>というヘッダー付きのHTTPSレスポンスを返すゲートウェイを作り、そのうえで適切なHTTPサイトへリダイレクトするといった方法を講じる必要がある。</p>
+<h2>奪ったドメインの証明書発行と中間者攻撃</h2>
+<p><code>lovelive-anime.jp</code>の上ではHTTPのサイトである<a href="">http://lovelive-anime.jp</a><a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>が運用されていた。攻撃者はドメインを奪取した後に<a href="https://letsencrypt.org/">Let's Encrypt</a>を利用して証明書を発行したとみられる。攻撃者が発行したとみられる証明書は下記で確認できる。</p>
+<ul>
+<li><a href="https://crt.sh/?id=1349848557" class="uri">https://crt.sh/?id=1349848557</a> (<code>lovelive-anime.jp</code>, <code>www.lovelive-anime.jp</code>)</li>
+</ul>
+<p>Let's Encryptなどであればドメインを奪ってから証明書を作るということがすぐさま可能である。とはいえLet's Encryptで作成できる証明書は短命であることも同時に考えなければならない。</p>
+<p>さて、もし正当なドメインの管理者がHTTPによるサイトをHTTPSへ変更した場合について考える。ただし、攻撃者は一時的にドメインを得ていた時間を利用して証明書を入手している可能性がある。その場合は<a href="https://ja.wikipedia.org/wiki/%E4%B8%AD%E9%96%93%E8%80%85%E6%94%BB%E6%92%83">中間者攻撃</a>を受ける可能性がある。証明書の無効化（リボーク）の方法について軽く調査してみても、他人によって発行された証明書をリボークする手立ては見つけられなかったので、恐らく認証局に事情を説明してリボークしてもらうことになると考えられる。このリボークが終了するまでの間は、たとえHTTPSサイトを作成したとしても若干の不安が残る状態になる。</p>
+<h1>まとめ</h1>
+<p>ここではHSTSを利用した攻撃（？）について述べたが、たとえばフィッシングなど他の悪意のある行為が無数に存在するだろう。DNSのMXレコードを書き換えてメールを盗むといった行為も考えられる。ドメインの管理はセキュリティの中でとても重要な部分であるということを考えさせられる出来事であった。ドメインが奪われたとき、攻撃者はDNSにどのようなレコードを登録していたか、またそれの証明書を発行したか？といった攻撃者の行動をきちんと残しておくことも重要かもしれない。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="https://tools.ietf.org/html/rfc6797">HTTP Strict Transport Security (HSTS)</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>この記事では公式が現在はアクセスしないようにと要請していることから、念のため<a href="">http://lovelive-anime.jp</a>という文字列からのリンクが機能しないようにした。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

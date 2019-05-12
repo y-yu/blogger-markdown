@@ -6,7 +6,7 @@ PBCOPY = pbcopy
 .PHONY: clean
 
 docs/%.html: articles/%.md filters/code.py
-	$(PANDOC) -f markdown_github+footnotes+header_attributes-hard_line_breaks -t html --mathjax --filter ./filters/code.py $< -o $@
+	$(PANDOC) -f markdown_github+footnotes+yaml_metadata_block+header_attributes-hard_line_breaks -t html --mathjax --filter ./filters/code.py $< -o $@
 	$(CAT) $@ | $(PBCOPY)
 
 clean:

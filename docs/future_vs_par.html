@@ -1,0 +1,143 @@
+<h1>はじめに</h1>
+<p>Scalaは<code>Future</code>を使うことで、他のプログラム言語に比べて気軽に非同期処理・並列処理を記述することができる。ところが、これにはちょっとした問題が潜んでいることを<a href="http://amzn.asia/fp1Efdz">FP in Scala</a>という本<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>は教えてくれる。この記事ではScala標準の<code>Future</code>にどうした問題があるのだろうかをFP in Scalaの例と比較しつつ説明しながら、最終的には参照透過性との関連について述べたい。</p>
+<h1>Scalaの<code>Future</code></h1>
+<p>まず、Scalaの<code>Future</code>を使うことでたとえば数値のリストの合計を得る関数<code>sum</code>を次のように書ける。ただ、このコードに登場する型<code>Future</code>や<code>ExecutionContext</code>はひとまずこの時点では詳細を気にする必要はない。</p>
+<pre><code class="scala">object SumList {
+  def sum(ints: IndexedSeq[Int])(implicit ec: ExecutionContext): Future[Int] =
+    if (ints.length &lt;= 1)
+      Future.successful(ints.headOption.getOrElse(0))
+    else
+      val (l, r) = ints.splitAt(ints.length  / 2)
+      (sum(l) zip sum(r)).map((a, b) =&gt; a + b)
+}</code></pre>
+<p>これにどのような問題があるだろうかについて、FP in Scalaでは似たようなデータ構造をはじめから作ることで説明している。</p>
+<h1>FP in Scalaの<code>Par</code></h1>
+<p>ここではFP in Scalaで登場する<code>Par</code>というデータ構造を実装する過程で、非同期・並列処理についていろいろと考えていく。</p>
+<h2>並列計算のナイーブ実装とその問題</h2>
+<p>まず並列処理のデータ構造を自作する。とはいえ、並列処理やスレッドといった部分に対する知識はほとんど必要ない。まず、このデータ構造<code>Par</code>をつくる前に、並列処理に対するプリミティブを次のように用意する。</p>
+<pre><code class="scala">object Par {
+  def unit[A](a: =&gt; A): Par[A] = ???
+
+  def get[A](a: Par[A]): A = ???
+}</code></pre>
+<p>この2つのメソッドの実装はひとまず置いておいて、ひとまず機能だけを考えることとする。まずメソッド<code>unit</code>は型<code>A</code>の<strong>評価される前の式または値</strong>を受け取り、それを別のスレッドで評価するためのデータ構造<code>Par[A]</code>を返す。そしてメソッド<code>get</code>は並列計算の結果の値を取り出す。これらの具体的なコードは忘れて、これを使うことでたとえばさきほどの関数<code>sum</code>を次のように書ける。</p>
+<pre><code class="scala">object SumList {
+  def sum(ints: IndexedSeq[Int]): Int =
+    if (ints.length &lt;= 1)
+      ints.headOption.getOrElse(0)
+    else
+      val (l, r) = ints.splitAt(ints.length  / 2)
+      val sumL = Par.unit(sum(l))
+      val sumR = Par.unit(sum(r))
+      Par.get(sumL) + Par.get(sumR)
+}</code></pre>
+<p>このコードは、リストの長さが$0$の場合は<code>0</code>を返し、それ以外の場合はリストを半分に分割して左右をそれぞれ別スレッドで再帰的に<code>sum</code>へ投入する。その後それぞれの値を<code>Par.get</code>で取り出して足し算しその結果を返している。 これで原始的な<code>Future</code>もどきができているという気がする。ところが、これはよく考えると<strong>参照透過性</strong>が破壊されるということが分かる。まず、参照透過性の定義について述べる。</p>
+<dl>
+  <dt>参照透過</dt>
+  <dd>式が参照透過であるとは、どのようなプログラムにおいても、プログラムの意味を変えることなく、式をその評価結果に置き換えることができること。</dd>
+</dl>
+<p>このルールをどの部分が破っているかというと、次の部分である。</p>
+<pre><code class="scala">val sumL = Par.unit(sum(l))
+val sumR = Par.unit(sum(r))
+Par.get(sumL) + Par.get(sumR)</code></pre>
+<p>参照透過性が保たれているならば、上記の式を次のように置き換えてもプログラムの意味が変化しないはずである。</p>
+<pre><code class="scala">Par.get(Par.unit(sum(l))) + Par.get(Par.unit(sum(r)))</code></pre>
+<p>ところが、この式について考えると足し算の左側である<code>Par.get(Par.unit(sum(l)))</code>はその引数である<code>Par.unit(sum(l))</code>の計算でブロックしてしまうので、さきほどのように並列実行はされない。従って、<code>Par.unit</code>は参照透過ではない部分、つまり副作用があることが明らかである。とはいえ、この副作用は<code>Par.get</code>を利用するまでは露呈しないので、計算の最後に<code>Par.get</code>を利用したいというのが自然な考えとなる。そのためには<code>Par.get</code>を呼び出すことなく<code>Par[?]</code>を合成（結合）できると便利そうに思える。</p>
+<h2><code>map2</code>により計算の合成</h2>
+<p>たとえば次のようなメソッド<code>map2</code>があれば<code>Par.get</code>を利用することなく<code>sum</code>を実装できそうである。</p>
+<pre><code class="scala">object Par {
+  def map2[A, B, C](a: Par[A], b: Par[B])(f: (A, B) =&gt; C): Par[C] = ???
+}</code></pre>
+<p>この<code>map2</code>の実装はひとまずおいておくとして、これを利用すればさきほどの<code>sum</code>は次のようになる。</p>
+<pre><code class="scala">object SumList {
+  def sum(ints: IndexedSeq[Int]): Par[Int] =
+    if (ints.length &lt;= 1)
+      Par.unit(ints.headOption.getOrElse(0))
+    else
+      val (l, r) = ints.splitAt(ints.length  / 2)
+      Par.map2(sum(l), sum(r))((a, b) =&gt; a + b)
+}</code></pre>
+<p>このようにしたなら、後は最後に必要になったところで<code>Par.get</code>を実行するということができる。よって<code>sum</code>はインターフェースを変えることになったものの、参照透過性を得ることに成功した。</p>
+<h2>フォークのタイミング</h2>
+<p>別スレッドで実行するべきときと、そうでもないときがあるだろう。<code>Par[?]</code>ではあるもののここでは別スレッドで実行する必要がない、ということを今のAPIでは表現できず、<code>Par.unit</code>を使えば常に別スレッドで計算が実行されてしまう。そこで<code>Par.fork</code>というメソッドを用意する。これは次のようなインターフェースである。</p>
+<pre><code class="scala">object Par {
+  def fork[A](a: =&gt; Par[A]): Par[A] = ???
+
+  def unit[A](a: A): Par[A] = ???
+}</code></pre>
+<p><code>Par.fork</code>によってもはや<code>Par.unit</code>が遅延である必要はなくなる。そして、これがあると次のように<code>sum</code>をかきなおすことができる。</p>
+<pre><code class="scala">object SumList {
+  def sum(ints: IndexedSeq[Int]): Par[Int] =
+    if (ints.length &lt;= 1)
+      Par.unit(ints.headOption.getOrElse(0))
+    else
+      val (l, r) = ints.splitAt(ints.length  / 2)
+      Par.map2(Par.fork(sum(l)), Par.fork(sum(r)))((a, b) =&gt; a + b)
+}</code></pre>
+<p>こうすることで、どのような場合に別スレッドで実行するのかをプログラマが意図できるようになる。 ところが、<code>Par.fork</code>によって他のスレッドで計算を実行するといった場合、スレッドプールなどの情報が必要となる。<code>Par.fork</code>の呼び出しとともに適当にスレッドを起動してもよいといえばよいが、通常のプログラムではCPUのコア数などに基づくスレッドプールからスレッドを用意することが多い。ここでは次の2つの選択肢がある。</p>
+<ol>
+<li><code>Par.fork</code>がスレッドプールの情報を受けとって<code>Par.fork</code>の呼び出しと同時にスレッドを分岐させる</li>
+<li>計算の結果（型<code>Par[?]</code>となる値）を取っておき、<code>Par.get</code>がスレッドプールなどの情報を持ち込んで、そのときにスレッドを分岐させる</li>
+</ol>
+<p>ここでは<code>Par.get</code>のインターフェースを改良して、後者の<code>Par.get</code>がスレッドプールなどの情報を受けとってその時にスレッドを分岐させるという選択をすることにする。</p>
+<pre><code class="scala">object Par {
+  def get[A](ec: ExecutionContext)(a: Par[A]): A
+}</code></pre>
+<p>ここでは冒頭で登場した型<code>ExecutionContext</code>を利用している。<code>ExecutionContext</code>はScala標準のデータ構造でどのように並列計算を行うかが決められている。</p>
+<h2><code>Par</code>の具体的な実装</h2>
+<p>それではいよいよ<code>Par.unit</code>と<code>Par.get</code>に具体的な実装を与えよう。コードの全体は次のようになる<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>。</p>
+<pre><code class="scala">case class Par[A](f: ExecutionContext =&gt; Future[A])
+
+object Par {
+  def unit[A](a: A): Par[A] = Par(ec =&gt; Future.successful(a))
+
+  def fork[A](a: =&gt; Par[A]): Par[A] = Par(ec =&gt; a.f(ec))
+
+  def map2[A, B, C](a: Par[A], b: Par[B])(f: (A, B) =&gt; C): Par[C] = Par { ec =&gt;
+    val fa = a.f(ec)
+    val fb = b.f(ec)
+    (fa zip fb).map(f)
+  }
+
+  def get[A](ec: ExecutionContext)(a: Par[A]): A = Await.result(a.f(ec), Duration.Inf)
+}</code></pre>
+<h1><code>Par</code> vs <code>Future</code></h1>
+<p>さて、ここまででもしかしたら勘のよい人ならば<code>Par</code>と<code>Future</code>の違いを分ったかもしれない。違いをまとめると次のようになる。</p>
+<ul>
+<li><code>Future</code>は<code>Future</code>を呼び出したときに別スレッドへの分岐が直ちに開始されるが、<code>Par</code>は<code>get</code>で評価するときにはじめて別スレッドへの分岐が行われる</li>
+</ul>
+<p>これにより、Scalaの<code>Future</code>は参照透過性を破壊するケースがある。たとえば次のようなコードがあるとする。</p>
+<pre><code class="scala">def futureFunctionA(): Future[Int] = ???
+
+def futureFunctionB(): Future[Int] = ???
+
+for {
+  a &lt;- futureFunctionA()
+  b &lt;- futureFunctionB()
+} yield ???</code></pre>
+<p>これを次のように変数へ代入した形に書き直す。</p>
+<pre><code class="scala">def futureFunctionA(): Future[Int] = ???
+
+def futureFunctionB(): Future[Int] = ???
+
+val fa = futureFunctionA()
+val fb = futureFunctionB()
+
+for {
+  a &lt;- fa
+  b &lt;- fb
+} yield ???</code></pre>
+<p>もし参照透過なプログラムであればこの2つはプログラムの意味が等しくなるはずであるが、<code>Future</code>は作った瞬間に別スレッドが起動し、また<code>flatMap</code>は結果を待ち受けるためブロックする。このことをあわせて考えると、最初の代入しない例では最初の<code>futureFunctionA</code>が完了するまで待ち、そして次に<code>futureFunctionB</code>を起動するという流れになる。一方で一旦代入するとその時点で<code>Future</code>が別スレッドで起動するので、後者の例では2つの<code>Future</code>がほぼ同時にスタートしていることとなる。これはプログラムの意味が等しいとは言いがたく、これにより参照透過性が破壊される可能性があるといってよい。 一方で<code>Par</code>はこのように書いたとしても<code>Par.get</code>を呼び出したときはじめて別スレッドへの分岐をはじめとした計算が実行されるため、このような問題は起きない。</p>
+<h1>まとめ</h1>
+<p>とはいえ、既存の<code>Future</code>が完全にダメかというと実用上はほとんど問題がないと感じる。参照透過性が崩れるので、一旦代入するということと代入せずに使うことの間に意味上の区別があるのはちょっと使いにくいだろう。<a href="https://monix.io/docs/3x/eval/task.html">Monix.Task</a>はこの記事で紹介した<code>Par</code>のようにスレッドの起動と合成を分けていると聞いたことがあるので、もし興味がある方はこちらの実装を読んでみたり使ってみることをおすすめする。 またFP in Scalaにはこの他にも興味深い例がいくつも書かれているので、この話題に興味を持たれた方はぜひ購入して読んでみてほしい。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="http://amzn.asia/fp1Efdz">FP in Scala</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>この本の邦題は「Scala関数型デザイン&amp;プログラミング ―Scalazコントリビューターによる関数型徹底ガイド」と呼ばれるが、長いので界隈では“FP in Scala”と呼ばれている。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>この例では<code>get</code>の実装でタイムアウトとして<code>Duration.Inf</code>を利用しているが、これはコードを簡単にするためであり本来きちんとやるならば引数などでタイムアウトを受け取るべきである。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+</ol>
+</section>
