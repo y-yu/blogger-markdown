@@ -1,0 +1,320 @@
+<h1>はじめに</h1>
+<p>ScalaやHaskellなどでは<strong>モナド</strong>を利用して副作用<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>を抽象化するということがしばしば行われる。<strong>Fujitask</strong>はScalaで実装された1つのモナドで、データベースへのアクセスに関するトランザクション制御を抽象化した。ところがモナドは<code>Reader[Future[Either[Error, Option[A]]]]</code>のようにいくつものモナドが入れ子になってしまったとき、Scalaの<code>for</code>式のようなモナド構文では内側のモナドへのアクセスが難しくなってしまう。 この問題へのアプローチとして有名なものに<strong>モナドトランスフォーマー</strong>がある。あるモナドトランスフォーマー<code>T</code>は任意モナド<code>M</code>を引数に取って<code>T[M]</code>となる新しい1つのモナドとなり、このモナド<code>T[M]</code>は<code>T</code>と<code>M</code>の両方のモナドの能力を持つ。たとえばエラーと成功を表すようなモナドトランスフォーマー<code>EitherT</code>と、非同期実行を表すモナド<code>Future</code>を合成した<code>EitherT[Future]</code>は<code>Future[Either]</code>のような能力となり、これは<code>Either</code>と<code>Future</code>の機能を同時に使えるようなモナドとなる。ただしモナドトランスフォーマーは<code>Either</code>に対して<code>EitherT</code>や<code>Reader</code>に対して<code>ReaderT</code>など次々と生みだしていく必要がある。 <strong>Extensible Effects</strong>とはモナドトランスフォーマーをよりよく改良したものであり、モナドトランスフォーマーのような新しい構造を必要とせずに異なるモナドを合成できる。ScalaではExtensible Effectsの実装として<a href="https://github.com/atnos-org/eff">atnos-eff</a>や<a href="https://github.com/halcat0x15a/kits-eff">kits-eff</a>があり、今回はkits-effを利用してExtensible EffectsによるFujitaskを実装した。 この記事ではまずFujitaskについて簡単な解説を行い、そして今回のExtensible Effects版Fujitaskの利用例を見せる。そして具体的な実装を紹介し、最後にまとめと参考文献の紹介を行う。</p>
+<p>この記事について間違った点などがあれば気軽にコメントなどで教えてほしい。なお完全なソースコードは下記のリポジトリに置かれている。</p>
+<ul>
+<li><a href="https://github.com/y-yu/fujitask-eff" class="uri">https://github.com/y-yu/fujitask-eff</a></li>
+</ul>
+<h1>Fujitaskとは？</h1>
+<p>Fujitaskはデータベースなどのトランザクションを管理するモナドであり、次のような特徴を持つ。</p>
+<ul>
+<li>トランザクションが読み込みなのか、読み込みと書き込みの両方ができるのかを<strong>型レベルの計算</strong>により決定する</li>
+</ul>
+<p>たとえばFujitaskでは読み込みしかできないReadトランザクションと、読み込みと書き込みができるReadWriteトランザクションを合成すると、型レベルの計算によりReadWriteのトランザクションとなる。実現の詳しい解説は割愛するが、これはサブタイプにより実現されている。それゆえにHaskell由来のExtensible Effectsへ持ち込めるのかは興味深い話題であり、かつて色々と考えたもののうまくいかなかった。 kits-effではモナドスタック<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>を型の積として表すため、こちらであればサブタイプを利用したFujitaskを作成できると考えた。atnos-effが用いるような型レベルのリスト的な構造ではFujitaskのように2つ型の共通のサブタイプを見つけてそれに置き換えるといったことが難しい。一方でkits-effでは<code>with</code>を利用した型の積を利用しているので、うまく工夫することでサブタイプを利用することができるのではないかと考えた。</p>
+<h1>利用例</h1>
+<p>解説のまえに、まずはどのように利用できるのかを見てみる。普通のモナドと同じように<code>for-yield</code>式の中で利用できる。</p>
+<pre><code class="scala">case class User(id: Long, name: String)
+// create table `user` (
+//   `id` bigint not null auto_increment,
+//   `name` varchar(64) not null
+// )
+
+val logger: Logger = LoggerFactory.getLogger(Main.getClass)
+
+val eff1 = for {
+  user1 &lt;- userRepository.read(1L)
+  _     &lt;- userRepository.create("test")
+  user2 &lt;- userRepository.read(1L)
+} yield {
+  logger.info(s"user1 is $user1")
+  logger.info(s"user2 is $user2")
+}
+Fujitask.run(eff1)</code></pre>
+<p>この結果は次のようになる。</p>
+<pre><code>02:08:31.610 [run-main-1] INFO  repository.impl.jdbc.package$ - ReadWriteRunner begin ---------&gt;
+02:08:31.672 [scala-execution-context-global-82] INFO  Main$ - user1 is None
+02:08:31.672 [scala-execution-context-global-82] INFO  Main$ - user2 is Some(User(1,test))
+02:08:31.674 [scala-execution-context-global-82] INFO  repository.impl.jdbc.package$ - &lt;--------- ReadWriteRunner end</code></pre>
+<p><code>id = 1</code>となるユーザーが存在しないため最初は<code>None</code>となり、その後<code>userRepository.create</code>でユーザーを作ったことで<code>user2</code>では<code>Some</code>となっている。ここでは読み込み（<code>read</code>）と書き込み（<code>create</code>）を行っているためログとして<code>ReadWriteRunner begin</code>/<code>ReadWriteRunner end</code>が出力されている。 この後たとえば次のように読み込みだけを行ってみる。</p>
+<pre><code class="scala">val eff2 = for {
+  user3 &lt;- userRepository.read(1L)
+} yield {
+  logger.info(s"user3 is $user3")
+}
+Fujitask.run(eff2)</code></pre>
+<pre><code>02:08:31.675 [scala-execution-context-global-84] INFO  repository.impl.jdbc.package$ - ReadRunner begin ---------&gt;
+02:08:31.676 [scala-execution-context-global-104] INFO  Main$ - user3 is Some(User(1,test))
+02:08:31.677 [scala-execution-context-global-104] INFO  repository.impl.jdbc.package$ - &lt;--------- ReadRunner end</code></pre>
+<p>さきほど作ったユーザーが表示された。ここでは読み込みしか行っていないので<code>ReadRunner begin</code>/<code>ReadRunner end</code>がログに出力されている。</p>
+<p>これだけではモナド版Fujitaskと変わりないが、Extensible Effects版はモナドトランスフォーマーを定義することなくたとえば<code>Reader</code>モナドと組み合わせて次のように使うことができる。</p>
+<pre><code class="scala">val eff3 = for {
+  name &lt;- Reader.ask[String]
+  user &lt;- userRepository.create(name)
+  user4 &lt;- userRepository.read(user.id)
+} yield {
+  logger.info(s"user4 is $user4")
+}
+Fujitask.run(Reader.run("piyo")(eff3))</code></pre>
+<pre><code>02:20:15.892 [scala-execution-context-global-134] INFO  repository.impl.jdbc.package$ - ReadWriteRunner begin ---------&gt;
+02:20:15.893 [scala-execution-context-global-134] INFO  Main$ - user4 is Some(User(2,piyo))
+02:20:15.893 [scala-execution-context-global-133] INFO  repository.impl.jdbc.package$ - &lt;--------- ReadWriteRunner end</code></pre>
+<p><code>Reader.run</code>の引数<code>piyo</code>を<code>name</code>に持つユーザーが作成され、それが表示されている。かつ読み込み・書き込みの両方なので<code>ReadWriteRunner</code>が利用されている。 このFujitaskは、<code>Reader</code>以外にもkits-effで定義されている任意のモナドと組み合わせることができる。</p>
+<h1>実装</h1>
+<p>ここでは詳しい実装について解説する。ただ<a href="https://qiita.com/pab_tech/items/86e4c31d052c678f6fa6">モナド版Fujitaskの記事</a>と比較すると、ほとんどが同じように作られていることが分かると思う。</p>
+<h2>エフェクトの定義</h2>
+<p>まずはFujitaskを表すエフェクト<a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a><code>Fujitask</code>を定義する。</p>
+<pre><code class="scala">sealed abstract class Fujitask extends Product with Serializable
+
+object Fujitask {
+  final case class Execute[A](f: ExecutionContext =&gt; Future[A])
+    extends Fujitask with Fx[A]
+  
+  abstract case class Transaction() extends Fujitask with Fx[Transaction]
+  
+  final case class Ask[I &lt;: Transaction]() extends Fujitask with Fx[I]
+}</code></pre>
+<dl>
+  <dt><code>Execute</code></dt>
+  <dd><code>ExecutionContext</code>を利用して最終的な計算を行う。</dd>
+
+  <dt><code>Ask</code></dt>
+  <dd>Readerモナドの<code>ask</code>に相当し、トランザクション内のデータベースセッションを取得する。</dd>
+
+  <dt><code>Session</code></dt>
+  <dd>具体的なトランザクション用の情報のための抽象的なデータ構造を表す。</dd>
+</dl>
+<p><code>Ask</code>があるのはモナド版のFujitaskと変わらず、<code>Execute</code>はモナド版の<code>Task.apply</code>に相当する。 またこれらをインスタンシエイトするための関数を次のように作っておく。</p>
+<pre><code class="scala">object Fujitask {
+  def apply[I, A](a: =&gt; A): Eff[I, A] =
+    Eff(Execute(Future(a)(_)))
+
+  def ask[R &lt;: Transaction, I &lt;: R]: Eff[R, I] =
+    Eff(Ask())
+}</code></pre>
+<h2>トランザクションの定義</h2>
+<p>次にモナド版Fujitaskと同様に抽象的なトランザクションと具体的なトランザクションを定義する。トランザクションの管理に必要なデータベースとのセッションなどはデータベースの種類やデータベース用のライブラリーに依存する。そこで抽象的な部分でReadトランザクションやReadWriteトランザクションなどと定義しておいて、具体的なものとしてたとえば<a href="http://scalikejdbc.org/">ScalikeJDBC</a>の実装を利用するものを定義することで、インターフェースと実装を分離しやすくなる。 まずは抽象的なトランザクションの定義である。</p>
+<pre><code class="scala">trait ReadTransaction extends Transaction
+
+trait ReadWriteTransaction extends ReadTransaction</code></pre>
+<p><code>Transaction</code>はさきほど作成した<code>Fujitask.Transaction</code>である。<code>Transaction</code>が別の場所にあること除いて、モナド版Fujitaskと全く同じである。 次に今回は例としてScalikeJDBCを利用する。</p>
+<pre><code class="scala">trait ScalikeJDBCTransaction extends Transaction {
+  val ctx: DBSession
+}
+
+class ScalikeJDBCReadTransaction(val ctx: DBSession)
+    extends ScalikeJDBCTransaction
+      with ReadTransaction
+
+class ScalikeJDBCWriteTransaction(override val ctx: DBSession)
+  extends ScalikeJDBCReadTransaction(ctx)
+    with ReadWriteTransaction</code></pre>
+<p>これについてもモナド版とほとんど同じである。</p>
+<h2>リポジトリ層の定義</h2>
+<p>次に実際にデータベースへアクセスする部分のインターフェースと実装を作っていく。いま次のようなテーブル<code>user</code>によってユーザーのデータを表す<code>User</code>がある</p>
+<pre><code class="sql">create table `user` (
+  `id` bigint not null auto_increment,
+  `name` varchar(64) not null
+)</code></pre>
+<pre><code class="scala">case class User(id: Long, name: String)</code></pre>
+<p>これへの操作のインターフェースを次のように定義する。</p>
+<pre><code class="scala">trait UserRepository {
+  def create(name: String): Eff[ReadWriteTransaction, User]
+
+  def read(id: Long): Eff[ReadTransaction, Option[User]]
+
+  def update(user: User): Eff[ReadWriteTransaction, Unit]
+
+  def delete(id: Long): Eff[ReadWriteTransaction, Unit]
+}</code></pre>
+<p>ここではインターフェースなので抽象的なトランザクションを表す<code>ReadTransaction</code>や<code>ReadWriteTransaction</code>を利用している。そして具体的な実装は次のようになる。</p>
+<pre><code class="scala">
+class UserRepositoryImpl extends UserRepository {
+  def create(name: String): Eff[ReadWriteTransaction, User] =
+    Fujitask.ask map { (i: ScalikeJDBCWriteTransaction) =&gt;
+      implicit val session: DBSession = i.ctx
+
+      val sql = sql"""insert into user (name) values ($name)"""
+      val id = sql.updateAndReturnGeneratedKey.apply()
+      User(id, name)
+    }
+
+  def read(id: Long): Eff[ReadTransaction, Option[User]] =
+    Fujitask.ask map { (i: ScalikeJDBCReadTransaction) =&gt;
+      implicit val session: DBSession = i.ctx
+
+      val sql = sql"""select * from user where id = $id"""
+      sql.map(rs =&gt; User(rs.long("id"), rs.string("name"))).single.apply()
+    }
+
+  def update(user: User): Eff[ReadWriteTransaction, Unit] =
+    Fujitask.ask map { (i: ScalikeJDBCWriteTransaction) =&gt;
+      implicit val session: DBSession = i.ctx
+
+      val sql = sql"""update user set name = ${user.name} where id = ${user.id}"""
+      sql.update.apply()
+    }
+
+  def delete(id: Long): Eff[ReadWriteTransaction, Unit] =
+    Fujitask.ask map { (i: ScalikeJDBCWriteTransaction) =&gt;
+      implicit val session: DBSession = i.ctx
+
+      val sql = sql"""delete user where id = $id"""
+      sql.update.apply()
+    }
+}</code></pre>
+<p><code>Fujitask.ask</code>によってScalikeJDBCのセッションを取得し、それを用いて具体的なSQLを発行する。</p>
+<h2><code>FujitaskRunner</code>の定義</h2>
+<p><code>FujitaskRunner</code>という型クラスを次のように定義する。</p>
+<pre><code class="scala">trait FujitaskRunner[I] {
+  def apply[A](task: I =&gt; Future[A]): Future[A]
+}</code></pre>
+<p>これは型パラメーター<code>I</code>を引数にとり<code>Future[A]</code>となるような関数<code>task</code>を受けとり、その結果をとして<code>Future[A]</code>を返す。ScalikeJDBCによる実装は次のようになる。</p>
+<pre><code class="scala">package object jdbc {
+  lazy val logger: Logger = LoggerFactory.getLogger(this.getClass)
+
+  implicit def readRunner[I &gt;: ReadTransaction](implicit ec: ExecutionContext): FujitaskRunner[I] =
+    new FujitaskRunner[I] {
+      def apply[A](task: I =&gt; Future[A]): Future[A] = {
+        logger.info("ReadRunner begin ---------&gt;")
+        val session = DB.readOnlySession()
+        val future = task(new ScalikeJDBCReadTransaction(session))
+        future.onComplete { _ =&gt;
+          logger.info("&lt;--------- ReadRunner end")
+          session.close()
+        }
+        future
+      }
+    }
+
+  implicit def readWriteRunner[I &gt;: ReadWriteTransaction](implicit ec: ExecutionContext): FujitaskRunner[I] =
+    new FujitaskRunner[I] {
+      def apply[A](task: I =&gt; Future[A]): Future[A] = {
+        logger.info("ReadWriteRunner begin ---------&gt;")
+        val future = DB.futureLocalTx(session =&gt; task(new ScalikeJDBCWriteTransaction(session)))
+        future.onComplete(_ =&gt;
+          logger.info("&lt;--------- ReadWriteRunner end")
+        )
+        future
+      }
+    }
+}</code></pre>
+<p>このように型パラメーターの下限を利用することでReadトランザクション時には<code>DB.readOnlySession()</code>で読み込み専用のセッションを取得し、そして一方でReadWriteトランザクションのときは<code>DB.futureLocalTx</code>でトランザクションを発生させる。 型パラメーター<code>I</code>は、後述するインタープリターの実行するコードの呼び出し部分でScalaのコンパイラーがコンパイル時に適切に計算する。</p>
+<h2>インタープリターの定義</h2>
+<p>インタープリターは実際にエフェクトスタックに積まれたエフェクトを解析して、副作用を生じさせる。たとえば<code>Future</code>を表すようなエフェクトがあるなら、実際にスレッドを起動するとか、あるいはファイルへのIOを行うエフェクトがあるならば<code>scala.io.Source</code>などを利用してファイルへアクセスするなどである。今考えている<code>Fujitask</code>はデータベースのトランザクションなので、ここでデータベースへトランザクションを発行するといったことが行われる。 これが最も複雑ではあると思うが、次のようになっている。</p>
+<pre><code class="scala">object Fujitask {
+  def run[I &lt;: Transaction: Manifest, A](
+    eff: Eff[I, A]
+  )(
+    implicit runner: FujitaskRunner[I],
+    ec: ExecutionContext
+  ): Future[A] = {
+    def handle(i: I) = new ApplicativeInterpreter[Fujitask, Any] {
+      override type Result[T] = Future[T]
+
+      def pure[T](a: T): Eff[Any, Result[T]] = Eff.Pure(Future.successful(a))
+
+      def flatMap[T, B](fa: Fujitask with Fx[T])(k: T =&gt; Eff[Any, Future[B]]): Eff[Any, Future[B]] =
+        fa match {
+          case Execute(f) =&gt;
+            Eff.Pure(f(ec).flatMap(a =&gt; Eff.run(k(a))))
+          case _: Ask[I] =&gt;
+            k(i.asInstanceOf[T])
+        }
+
+      def ap[T, B](fa: Fujitask with Fx[T])(k: Eff[Any, Result[T =&gt; B]]): Eff[Any, Result[B]] =
+        fa match {
+          case Execute(f) =&gt;
+            Eff.Pure(f(ec).flatMap(a =&gt; Eff.run(k).map(_(a))))
+          case _: Ask[I] =&gt;
+            k.map(_.map(_(i.asInstanceOf[T])))
+        }
+
+      def map[T, B](fa: Future[T])(k: T =&gt; B): Future[B] = fa.map(k)
+    }
+
+    runner(i =&gt; Eff.run(handle(i)(eff.asInstanceOf[Eff[Fujitask, A]])))
+  }
+}</code></pre>
+<p>まず最下部ではさきほどの<code>TaskRunner</code>を利用している。<code>i</code>には<code>ScalikeJDBCReadTransaction</code>などの具体的なトランザクションが入ることになる。 適切な<code>TaskRunner</code>が呼びだされることを説明するため、型<code>Eff[R, A]</code>について述べる。<code>R</code>はエフェクトスタック<a href="#fn4" class="footnote-ref" id="fnref4"><sup>4</sup></a>を表し、<code>A</code>はトランザクション内で実行された計算の結果を表す。上記の関数<code>run</code>は型パラメーター<code>I &lt;: Transaction: Manifest</code>と<code>A</code>を取り、引数に<code>eff: Eff[I, A]</code>を取っている。<code>Manifest</code>については本質的ではないので説明しないが、この型<code>I</code>は型<code>Transaction</code>のサブタイプであるので、エフェクトスタックそのものが<code>Transaction</code>のサブタイプでなければならない。 この型パラメーター<code>I</code>が、たとえば<code>ReadTransaction</code>と<code>ReadWriteTransaction</code>を<code>flatMap</code>したならば<code>ReadWriteTransaction</code>になる必要がある。いま<code>Eff[R, A]</code>の<code>flatMap</code>は次のように実装されている。</p>
+<pre><code class="scala">def flatMap[S, B](f: A =&gt; Eff[S, B]): Eff[R with S, B] =
+  this match {
+    case Eff.Pure(v) =&gt;
+      f(v)
+    case Eff.Impure(u, k) =&gt;
+      Eff.Impure(u.extend[S], k :+ f)
+  }</code></pre>
+<p>エフェクトスタック<code>R</code>と別のエフェクトスタック<code>S</code>を合成して<code>R with S</code>としている。より具体的に、次のような例を考えてみる。</p>
+<ul>
+<li><p><code>Eff[ReadTransaction, A]</code>と<code>Eff[ReadTransaction, B]</code>を合成した場合、<code>Eff[ReadTransaction with ReadTransaction, B]</code>となる。このとき</p>
+\[
+\def\RT{\color{blue}{\text{ReadTransaction}}\;}
+\def\RWT{\color{red}{\text{ReadWriteTransaction}}\;}
+\def\with{\text{with}\;}
+\RT =\, \RT \with \RT
+\]
+<p>となり<a href="#fn5" class="footnote-ref" id="fnref5"><sup>5</sup></a>ここでは<code>runner</code>として<code>readRunner</code>が選択される</p></li>
+<li><p>同様にいくつかの合成の結果<code>Eff[ReadTransaction with ReadWriteTransaction with ReadTransaction with ReadTransaction, A]</code>となった場合</p>
+\[
+\RWT <:\, \RT
+\]
+<p>なので、</p>
+\[
+\RWT =\, \RT \with \RWT \with \RT \with \RT
+
+\]
+<p>となり、<code>runner</code>として<code>readWriteRunner</code>が選択される</p></li>
+</ul>
+<p>このようにしてサブタイプによる型の交わりと型クラスを利用することで巧妙に適した<code>FujitaskRunner</code>のインスタンスを選択している。</p>
+<p>さて、次にインタープリターの内部について説明する。<code>ApplicativeInterpreter</code>をインスタンシエイトしており、この中で説明するべきところは<code>flatMap</code>メソッドである。</p>
+<pre><code class="scala">def flatMap[T, B](fa: Fujitask with Fx[T])(k: T =&gt; Eff[Any, Future[B]]): Eff[Any, Future[B]] =
+  fa match {
+    case Execute(f) =&gt;
+      Eff.Pure(f(ec).flatMap(a =&gt; Eff.run(k(a))))
+    case _: Ask[I] =&gt;
+      k(i.asInstanceOf[T])
+  }</code></pre>
+<p><code>fa</code>とはエフェクトであり、この型<code>Fujitask with Fx[T]</code>は値<code>fa</code>についての特徴を次のように説明している。</p>
+<ul>
+<li><code>Fujitask</code>のエフェクトである（<code>Fujitask</code>）</li>
+<li>継続（残りの計算）<code>k</code>を開始するために必要な値の型が<code>T</code>である（<code>Fx[T]</code>）</li>
+</ul>
+<p>そして<code>fa</code>に基づいて継続<code>k</code>を処理することができる。<code>fa</code>を<code>Execute</code>のケースと<code>Ask</code>のケースで場合わけをして、次のように処理を行っている。</p>
+<h3><code>Execute(f)</code>の場合</h3>
+<p>関数<code>f: ExecutionContext =&gt; Future[A]</code>を<code>run</code>が呼び出されたときに渡された<code>ExecutionContext</code>を利用して起動する。すると当然<code>Future[A]</code>となる値が得られる。さて、<code>Execute</code>の定義はこのようであった。</p>
+<pre><code class="scala">final case class Execute[A](f: ExecutionContext =&gt; Future[A])
+  extends Fujitask with Fx[A]</code></pre>
+<p><code>Fx[A]</code>を継承しているので、<code>k: A =&gt; Eff[Any, Future[B]]</code>となる。いま<code>Future[A]</code>が<code>f(ec)</code>で得られたため、これを<code>flatMap</code>することで<code>A</code>の値（<code>a</code>）を得られる。あとは<code>k(a)</code>で継続を起動すればよい。<code>k</code>の返り値は<code>Eff[Any, Future[B]]</code>であるが、<code>Eff.run</code>によって「もし<code>k(a)</code>の返り値のエフェクトスタックが空になっているならば、結果の型<code>Future[B]</code>の値を取り出す」ということができる<a href="#fn6" class="footnote-ref" id="fnref6"><sup>6</sup></a>。これにより処理が終了する。</p>
+<h3><code>Ask</code>の場合</h3>
+<p><code>Ask</code>は次のようであった。</p>
+<pre><code class="scala">final case class Ask[I &lt;: Transaction]() extends Fujitask with Fx[I]</code></pre>
+<p><code>Fx[I]</code>なので継続<code>k</code>を呼びだすための引数の型<code>T</code>は<code>I</code>であるということになる。したがって継続<code>k</code>に<code>FujitaskRunner</code>から渡された<code>i</code>を渡して起動するだけでよい<a href="#fn7" class="footnote-ref" id="fnref7"><sup>7</sup></a>。</p>
+<h1>まとめ</h1>
+<p>このようにしてExtensible Effects版のFujitaskを実装することができた。しかしこの実装は次のような問題があるのではないか？という指摘もある。</p>
+<ul>
+<li><code>Transaction</code>はエフェクトを表現するが、これが<code>sealed</code>されていないのでユーザーが任意のエフェクトを作ってしまう可能性がある</li>
+</ul>
+<p>エフェクトを任意に作ることができてしまうので、このエフェクトのインタープリター（Fujitaskで言えば<code>Fujitask.run</code>）が意図しないようなエフェクトをエフェクトスタックに詰めこめてしまう。するとそのエフェクトはインタープリターによって処理されず、<code>Eff.run</code>がランタイムエラーを生じさせる可能性がある。 まだよく考えたわけではないものの、もし<code>Transaction</code>を継承したよく分からないエフェクトがあったとしても、適切な<code>FujitaskRunner[I]</code>が見つからずにコンパイルエラーとなるような予感もある。これについてはもう少し考えてみて、インタープリターが処理できないかつランタイムエラーとなるような状態が発生するかを検証しようと思う。</p>
+<h1>謝辞</h1>
+<p>Extensible Effects版Fujitaskを作るにあたって、<a href="https://twitter.com/halcat0x15a">@halcat0x15a</a>さんにはとても有用なコメントやコードの修正など様々な協力をしていただいた。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="https://booth.pm/ja/items/1309694">進捗大陸05</a>（“ScalaらしいEffを目指して”）
+<ul>
+<li><a href="mailto:実装に利用したkits-effの実装詳細に関して作者の@halcat0x15aさんにより解説されている記事">実装に利用したkits-effの実装詳細に関して作者の@halcat0x15aさんにより解説されている記事</a></li>
+</ul></li>
+<li><a href="https://qiita.com/pab_tech/items/86e4c31d052c678f6fa6">ドワンゴ秘伝のトランザクションモナドを解説！</a></li>
+<li><a href="https://y-yu.github.io/fujitask-slide/fujitask_without_animation.pdf">筆者が社内勉強会でFujitask（モナド版）の説明のために作成したスライド</a></li>
+<li><a href="https://github.com/halcat0x15a/kits-eff">kits-eff</a></li>
+<li><a href="http://okmij.org/ftp/Haskell/extensible/more.pdf">Freer Monads, More Extensible Effects</a></li>
+</ul>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>最近は「副作用」という言葉ではなくて「計算効果（Computational effect）」という言葉で表現されることもある。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>複数種類のモナドをリストとして表現したものであり、たとえば<code>Reader[Future[Either[Error, Option[A]]]]</code>であれば<code>Stack(Reader, Future, Either, Option)</code>というようなイメージである。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p><strong>エフェクト</strong>とは副作用（計算効果）を抽象化したものである。モナドは副作用を抽象化する方法の1つであることから、ここではモナドのようなものと思えばよい。Extensible Effectsは（1）エフェクトをスタックに詰み、計算の合成を行うが、この時点ではまだスレッドを起動したりデータベースへ接続したりといった具体的な副作用は生じさせない。そして次に（2）インタープリターによってエフェクトが入ったスタックを解析し、それに基づいた副作用を生じさせる。 3つのデータ構造は次のような意味を持っている。<a href="#fnref3" class="footnote-back">↩</a></p></li>
+<li id="fn4"><p>エフェクト（たとえば<code>Fujitask</code>など）をモナドスタックのように並べたものである。モナドスタックと似ているが一応この記事ではモナドはエフェクトの具体的な実装であると区別しているため、呼び分けることとした。<a href="#fnref4" class="footnote-back">↩</a></p></li>
+<li id="fn5"><p>それほど重要ではないが、型$A, B$が等しい（$A = B$）とは$A$は$B$のサブタイプかつ$B$は$A$のサブタイプである（$A = B \Leftrightarrow (A &lt;: B \land B &lt;: A)$ことを指す。また$A &lt;: B$とは型$A$は型$B$のサブタイプであることを表す<a href="#fnref5" class="footnote-back">↩</a></p></li>
+<li id="fn6"><p>もしエフェクトスタックが空ではない値<code>eff: Eff[R, A]</code>によって<code>Eff.run(eff)</code>を実行した場合、ランタイムエラーを送出する。<a href="#fnref6" class="footnote-back">↩</a></p></li>
+<li id="fn7"><p>パターンマッチの結果<code>Ask</code>となった時点で<code>T = I</code>という型を決定できそうだが、Scalaの現時点でのコンパイラーはそれを検出してくれない。そのためコンパイルを通すためここでは<code>k(i.asInstanceOf[T])</code>としている。<a href="#fnref7" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

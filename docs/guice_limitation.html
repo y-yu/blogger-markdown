@@ -1,0 +1,108 @@
+<h1>はじめに</h1>
+<p>Scalaでそれなりの規模のプログラムを書く場合、Dependency Injection（DI）を避けて通ることはほとんどできない。DIはクラスといった具体的な実装が依存する別の実装を外から注入するための手法であり、Javaで開発された<a href="https://github.com/google/guice">Google Guice</a>がよく知られている。Scalaの特にWebプログラミングではGuiceを使うことが多いのではないかと思う。なぜならScalaのWebフレームワークとしてよく知られている<a href="https://www.playframework.com/">Play</a>がデフォルトでGuiceを採用しているので、これに従って書くと自ずとGuiceで作っていくことになる。この記事ではGuiceと型クラスを組み合せた際に解決がやや難しい問題に直面することを示し、最善ではないが一応この問題への解決策を紹介する。また、この議論を通してGuiceの限界についても付け加える。 もしこの記事を読んでコメントなどがあれば、気軽にコメントなどで教えてほしい。 なお、この記事のコードは下記のリポジトリに置かれている。</p>
+<ul>
+<li><a href="https://github.com/y-yu/guice-with-typeclass" class="uri">https://github.com/y-yu/guice-with-typeclass</a></li>
+</ul>
+<h1>Guiceの限界とその問題点</h1>
+<p>いま次のようなクラスを考える。</p>
+<pre><code class="scala">trait NeedToBeInjected
+
+class NeedToBeInjectedImpl[A: HasTypeClass] @Inject() (
+  dependency: Dependency
+) extends NeedToBeInjected { }</code></pre>
+<p>ここでは簡単のためインターフェース<code>NeedToBeInjected</code>は空であり意味がないが、実際のコードでは<code>NeedToBeInjected</code>にインターフェースがあり、そして<code>NeedToBeInjectedImpl</code>に具体的な実装が書かれる。具体的な実装であるクラス<code>NeedToBeInjectedImpl</code>は別のインターフェースである<code>Dependency</code><a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>に依存しており、この型を持つ具体的なインスタンスは<code>@Inject</code>によってGuiceから与えられる。ただ、ここで注意しなければならないのは<code>NeedToBeInjectedImpl</code>が型パラメータ<code>A</code>を取り、これは<strong>コンテキスト境界</strong>として型クラス<code>HasTypeClass</code>が与えられている。これは次のように書き直すことができる。</p>
+<pre><code class="scala">class NeedToBeInjectedImpl[A] @Inject() (
+  dependency: Dependency
+)(
+  implicit a: HasTypeClass[A]
+) extends NeedToBeInjected { }</code></pre>
+<p>つまりこのクラス<code>NeedToBeInjectedImpl</code>は型クラスのインスタンス<code>HasTypeClass[A]</code>を探索し、見つかったときに限ってコンパイルを通過し実行することができる。型クラス<code>HasTypeClass</code>は下記のように任意の型<code>A</code>についてインスタンス<code>typeClassInstance</code>を定義した。</p>
+<pre><code class="scala">trait HasTypeClass[A]
+
+object HasTypeClass {
+  implicit def typeClassInstance[A]: HasTypeClass[A] =
+    new HasTypeClass[A] {}
+}</code></pre>
+<p>さて、このコードを次のように配線<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>した。ただし<code>Entity</code>は空のトレイトである。上述のように<code>HasTypeClass</code>は任意の型についてインスタンスが存在するので、<code>Entity</code>がどのような型であっても影響はないので、ここでは定義を省略する。</p>
+<pre><code class="scala">class Module extends AbstractModule {
+  override def configure(): Unit = {
+    bind(classOf[Dependency])
+    bind(classOf[NeedToBeInjected])
+      .to(new TypeLiteral[NeedToBeInjectedImpl[Entity]]() {})
+  }
+}</code></pre>
+<p>これを実行すると理想的には次のようにインスタンスが注入されるはずである。</p>
+<dl>
+  <dt><code>Dependency</code></dt>
+  <dd>Guiceによってインスタンスが注入される</dd>
+
+  <dt><code>HasTypeClass</code></dt>
+  <dd>Scalaコンパイラーによるimplicitパラメーター探索でインスタンスが注入される</dd>
+</dl>
+<p>ところが実際に次のようなコードを実行すると次のようになる。</p>
+<pre><code class="scala">object Main {
+  def main(args: Array[String]): Unit = {
+    val injector = Guice.createInjector(new Module())
+
+    injector
+      .getInstance(
+        Key.get(classOf[NeedToBeInjected])
+      )
+  }
+}</code></pre>
+<pre><code>sbt:guice-with-typeclass&gt; run
+[info] running Main
+[error] (run-main-1) com.google.inject.CreationException: Unable to create injector, see the following errors:
+[error]
+[error] 1) No implementation for typeclass.HasTypeClass&lt;entity.Entity&gt; was bound.
+[error]   while locating typeclass.HasTypeClass&lt;entity.Entity&gt;
+[error]     for the 2nd parameter of impl.NeedToBeInjectedImpl.&lt;init&gt;(NeedToBeInjected.scala:11)
+[error]   at module.Module.configure(Module.scala:11)</code></pre>
+<p>このようにScalaのimplicitパラメーターで注入されるべきインスタンスがGuiceによって注入されようとしており、かつGuiceはそれに失敗してランタイムエラーとなった。このように型クラスのインスタンスを取るような実装をGuiceでインスタンシエイトするためには、次のような方法を使う必要がある。</p>
+<h2>1. 型クラスのインスタンスを<code>bind</code>で配線する</h2>
+<p>Scalaの処理系がコンパイルを完了させたという時点で、implicitパラメーターの解決は終っている。しかしGuiceはそれを使ってくれないようなので、手作業でたとえば<code>HasTypeClass[Entity]</code>のような型クラスのインスタンスを配線しようという作戦である。</p>
+<pre><code class="scala">class Module extends AbstractModule {
+  override def configure(): Unit = {
+    bind(classOf[Dependency])
+    bind(new TypeLiteral[HasTypeClass[Entity]]() {})
+      .toInstance(implicitly[HasTypeClass[Entity]])
+    bind(classOf[NeedToBeInjected])
+      .to(new TypeLiteral[NeedToBeInjectedImpl[Entity]]() {})
+  }
+}</code></pre>
+<p>このように<code>HasTypeClass[Entity]</code>をGuiceのインターフェースと実装の「辞書」にも明示的に加えておけば無事に実行することができる。</p>
+<h2>2. 型パラメーターを固定した実装を継承で作成する</h2>
+<p>次のようにクラスの継承を利用して型パラメーターを決定しまうという作戦が次の作戦となる。</p>
+<pre><code class="scala">class InjectTypeToResolveInstance @Inject() (
+  dependency: Dependency
+) extends NeedToBeInjectedImpl[Entity](dependency)</code></pre>
+<p>そしてこれの配線を次のように与える。</p>
+<pre><code class="scala">bind(classOf[NeedToBeInjected])
+  .to(classOf[InjectTypeToResolveInstance])</code></pre>
+<p>こうすると無事にインスタンシエイトが可能となる。</p>
+<h1><code>bind</code>の方法 <em>vs</em> 継承の方法</h1>
+<p>さて、ここからは（1）と（2）のメリット・デメリットを整理していきたい。筆者らが議論した結果、次のような結果となった。</p>
+<ul>
+<li>（1）<code>bind</code>の方法
+<ul>
+<li>書くコード量が少ない</li>
+<li>一方で、Scalaの処理系が処理するimplicitパラメーターの処理をGuiceに任せるということになり、たとえば再帰的な型クラスがあった際に上手く動作するのか分からない</li>
+</ul></li>
+<li>（2）継承の方法
+<ul>
+<li>書くコード量が（1）と比べて多いうえ、クラスが増える</li>
+<li>しかしimplicitパラメーターの探索・注入をScala処理系が掌握することになる。これによってランタイムエラーの可能性を減らせる可能性がある</li>
+</ul></li>
+</ul>
+<p>これらの議論に基づいて、筆者らは（2）がよいという結論になった。</p>
+<h1>まとめ</h1>
+<p>このように、もともとJavaでの利用を想定したGuiceではScalaと完全に調和するのまだ無理があるのかもしれない。<a href="https://twitter.com/_yyu_/status/1180772508275900416">マクロを使って<code>bind</code>を生成するというアイディア</a>もあり、これは今後の課題になりそうではある。 また<a href="https://github.com/wvlet/airframe">Airframe</a>といったScala向けのDIツールを使ってみるというのも挙がったが、すでにGuiceを利用したコードが大量にあったため今回は検証せずに不採用とした。 DI方法を変更してよいという仮定のもとであれば、Cake patternのようなScalaを利用したコンパイルタイムDIであれば、この問題は本質的に発生しないと考えられる。GuiceなどのランタイムDIと、Cake patternなどのコンパイルタイムDIのうちどれを選ぶか？というのはしばしば議論されるが、Scalaにおいてはこのような型クラスの問題があることから、この一点だけにおいてはコンパイルタイムDIの方が有利ではないかと考えている。</p>
+<h1>謝辞</h1>
+<p><a href="mailto:この記事の内容は@halcat0x15aさん">この記事の内容は@halcat0x15aさん</a>、@xuwei_kさん、 @ma2k8さん、<a href="mailto:そして@ippei-takahashiさんとの議論によって洗練された">そして@ippei-takahashiさんとの議論によって洗練された</a>。</p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p><code>Dependency</code>は他の依存なしにインスタンシエイトできる。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>DIのインターフェースと実装の関係を与えることを、ここでは<strong>配線</strong>という。<a href="#fnref2" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

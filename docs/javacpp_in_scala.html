@@ -1,0 +1,112 @@
+<h1>はじめに</h1>
+<p>未踏ターゲット2018年度ゲート式量子コンピュータにおける開発でC++で主に書かれた量子コンピューターのシミュレーターである<a href="https://github.com/qulacs/qulacs">Qulacs</a>を利用している。QulacsはPythonバインディングがすでに用意されているが、やはりより慣れたプログラム言語であるScalaで開発をしたいと常に思っていた。そこで<a href="https://github.com/bytedeco/javacpp">JavaCPP</a>を利用してQulacsのようなネイティブライブラリーをJava経由でScalaから呼び出すために色々と調査したところ、最終的にはsbtプラグインを作ることができた。</p>
+<ul>
+<li><a href="https://github.com/y-yu/sbt-javacpp4s" class="uri">https://github.com/y-yu/sbt-javacpp4s</a></li>
+</ul>
+<p>実はJavaCPPのGitHubオーガナイゼーションにもsbtプラグインがあるが、調べたところこれはJavaCPPですでに利用できるOpenCVなどをScalaから使いやすくするためのものであり、新規にネイティブライブラリーをScalaから利用できるようにするものではなかったため、今回新規に作成することとした。この記事ではこのsbtプラグインの使い方や一部の内部実装について解説する。 この記事を読んで分からないことや改善点がある場合は、気軽にコメントで教えてほしい。</p>
+<h1>プラグインの概要</h1>
+<p>このsbtプラグインは次の3つを行う。</p>
+<ol>
+<li><code>.so</code>（または<code>.dylib</code>）のようなネイティブライブラリーを作成する</li>
+<li>（1）のライブラリーとヘッダーファイルをJavaCPPに渡してJNI（Java Native Interface）用のファイルを作成する</li>
+<li>（2）を<code>g++</code>のような処理系でコンパイルしてJavaから利用できるネイティブライブラリーを作成する</li>
+</ol>
+<p>まず、（1）はライブラリーによってそれの作り方は（<code>make</code>を使うなど）色々異なると思われるので、sbtの<code>settingKey</code>としてOSコマンドをわたすようになっている。そして、（2）もまたsbtから新たなJavaプロセスを起動している。これはJVMへ渡すオプションを適宜変える必要があり、たしかにsbtの<code>run</code>コマンドや<code>javaOptions</code>などを適切に変更すれば達成できた可能性もあるが、労力のわりに最終的に起きることにたいした変わりがないということでこのようにした。そしてそのままJavaCPPが（3）を行いJavaから呼びだせるようなダイナミックリンクライブラリーとなる。</p>
+<h1>設定と使い方</h1>
+<p>ここからは<a href="https://github.com/y-yu/sbt-javacpp4s/tree/master/example">サンプルのプロジェクト</a>を元に解説していく。今、C++のソースコードとヘッダーファイルが次のように存在するものする。</p>
+<pre><code class="cpp">class HelloWorld {
+public:
+    int printN(int n);
+};</code></pre>
+<pre><code class="cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+#include "HelloWorld.hpp"
+
+using namespace std;
+
+int HelloWorld::printN(int n) {
+    for (int i = 0; i &lt; n; i++) {
+        cout &lt;&lt; "Hello World!\n";
+    }
+
+    return n;
+}</code></pre>
+<p>まず、これをコンパイルするための設定を<code>build.sbt</code>へ記述する。</p>
+<pre><code class="scala">includePath := (baseDirectory in Compile).value / "cpp_src"
+
+libraryName := "libHelloWorld"
+
+makeLibraryCommands := Seq(
+  gppCompilerPath.value,
+  "-I", includePath.value.toString,
+  currentLibraryMeta.value.option,
+  "-o",
+  (libraryDestinationPath.value / s"${libraryName.value}.${currentLibraryMeta.value.extension}").toString,
+  ((baseDirectory in Compile).value / "cpp_src" / "HelloWorld.cpp").toString
+)</code></pre>
+<p>ここで<code>makeLibraryCommands</code>が<code>libHelloWorld</code>を作成するために利用されるOSコマンドである。順番に解説していく。 まず<code>gppCompilerPath</code>はデフォルトで<code>clang++</code>が利用される。 次に<code>currentLibraryMeta</code>はOSによる<code>clang++</code>といった処理系のオプションと、生成されるネイティブライブラリーの拡張子を吸収するためのデータ構造<code>DynamicLibraryMeta</code>が保存されている。</p>
+<pre><code class="scala">sealed abstract class DynamicLibraryMeta(
+  val option: String,
+  val extension: String
+)
+
+object DynamicLibraryMeta {
+  case object Mac extends DynamicLibraryMeta("-dynamiclib", "dylib")
+  case object Linux extends DynamicLibraryMeta("-shared", "so")
+}</code></pre>
+<p>そして<code>currentLibraryMeta</code>はデフォルトはJavaのプロパティである<code>System.getProperty(&quot;os.name&quot;)</code>から自動で選択される。<code>libraryDestinationPath</code>もデフォルトでは<code>target</code>ディレクトリ下の専用ディレクトリを利用する。</p>
+<p>次にネイティブライブラリーを利用するJavaコードを作る。</p>
+<pre><code class="java">package javacpp.sbt;
+
+import org.bytedeco.javacpp.*;
+import org.bytedeco.javacpp.annotation.*;
+
+@Platform(include = {"HelloWorld.hpp"}, link = "HelloWorld")
+public class HelloWorld extends Pointer {
+    static {
+        Loader.load();
+    }
+
+    public HelloWorld() {
+        allocate();
+    }
+
+    public native void allocate();
+
+    public native int printN(int n);
+}</code></pre>
+<p>再び<code>build.sbt</code>へ戻り、ネイティブライブラリーと対応するJavaのクラスパスを与える。</p>
+<pre><code class="scala">nativeJavaClassPath := "javacpp.sbt.*"
+
+enablePlugins(SbtJavaCPP4S)</code></pre>
+<p>このようにワイルドカードを使うこともできる。また今回のプラグインを有効にして<code>build.sbt</code>における作業は終了となる。</p>
+<p>最後にScalaからJava部分の呼び出しコードを作っておく。</p>
+<pre><code class="scala">object HelloWorld {
+  def main(args: Array[String]): Unit = {
+    val instance = new HelloWorld()
+    instance.printN(5)
+  }
+}</code></pre>
+<p>あとはこれを<code>sbt run</code>すると次のようになる。</p>
+<pre><code class="console">$ sbt run
+[info] Loading settings for project example from build.sbt ...
+[info] Set current project to example (in build file:/Users/yyu/Desktop/javacpp-sbt/example/)
+[info] Compiling 1 Scala source to /Users/yyu/Desktop/javacpp-sbt/example/target/scala-2.12/classes ...
+[info] Success!
+[info] running (fork) org.bytedeco.javacpp.tools.Builder -cp /Users/yyu/Desktop/javacpp-sbt/example/target/scala-2.12/classes:/Users/yyu/Library/Caches/Coursier/v1/https/repo1.maven.org/maven2/org/bytedeco/javacpp/1.5.1/javacpp-1.5.1.jar:/Users/yyu/.sbt/boot/scala-2.12.10/lib/scala-library.jar -Dplatform.compiler=clang++ -Dplatform.includepath=/Users/yyu/Desktop/javacpp-sbt/example/cpp_src -Dplatform.linkpath=/Users/yyu/Desktop/javacpp-sbt/example/target/libjni -d /Users/yyu/Desktop/javacpp-sbt/example/target/libjni javacpp.sbt.*mple / Compile / generateJNILibrary 0s
+[info] Generating /Users/yyu/Desktop/javacpp-sbt/example/target/libjni/jnijavacpp.cpp
+[info] Generating /Users/yyu/Desktop/javacpp-sbt/example/target/libjni/jniHelloWorld.cpp
+[info] Compiling /Users/yyu/Desktop/javacpp-sbt/example/target/libjni/libjniHelloWorld.dylib
+[info] clang++ -I/Users/yyu/Desktop/javacpp-sbt/example/cpp_src -I/Library/Java/JavaVirtualMachines/openjdk-11.0.2.jdk/Contents/Home/include -I/Library/Java/JavaVirtualMachines/openjdk-11.0.2.jdk/Contents/Home/include/darwin /Users/yyu/Desktop/javacpp-sbt/example/target/libjni/jniHelloWorld.cpp /Users/yyu/Desktop/javacpp-sbt/example/target/libjni/jnijavacpp.cpp -march=x86-64 -m64 -O3 -Wl,-rpath,@loader_path/. -Wall -fPIC -dynamiclib -undefined dynamic_lookup -o libjniHelloWorld.dylib -L/Users/yyu/Desktop/javacpp-sbt/example/target/libjni -Wl,-rpath,/Users/yyu/Desktop/javacpp-sbt/example/target/libjni -lHelloWorld -framework JavaVM
+[info] Deleting /Users/yyu/Desktop/javacpp-sbt/example/target/libjni/jniHelloWorld.cpp
+[info] Deleting /Users/yyu/Desktop/javacpp-sbt/example/target/libjni/jnijavacpp.cpp
+[info] running (fork) javacpp.HelloWorld
+[info] Hello World!
+[info] Hello World!
+[info] Hello World!
+[info] Hello World!
+[info] Hello World!
+[success] Total time: 6 s, completed 2019/11/09 4:57:50</code></pre>
+<p>このように上手く動作している。</p>
+<h1>おわりに</h1>
+<p>小さな例では上手くいったので、次はQulacsのような大きなC++ライブラリーを扱えるようにしていきたい。今回の開発はコード量に対して大変な労力がかかっている。やはりネイティブのエラーをよく分かっていなかったり、ダイナミックリンクについて知っていなかったりと色々な苦労があった。余談となるがGo言語などがシングルバイナリとなっているのは、こういったダイナミックリンクの煩雑さも1つの要因ではないかと思う。</p>

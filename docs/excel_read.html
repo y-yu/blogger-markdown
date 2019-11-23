@@ -1,0 +1,236 @@
+<h1>はじめに</h1>
+<p>最近は業務でScalaを使ってExcelを解析するプログラムを保守・運用している。Excelは、JSONやXML、YAMLといった他のデータフォーマットと異なり、非エンジニアであっても編集することができるというのが大きな特徴であるが、その代償として限定されたデータ構造しか記述できない。 Scalaにおいては、たとえばJSONは<a href="https://github.com/playframework/play-json">Play JSON</a>のようにScalaのケースクラスからマクロを用いてパーザーを自動生成するというのが普及している。一方でExcelにはそのようなものが（筆者らが知る限りにおいて）存在しなかったため、これまでは<a href="https://github.com/folone/poi.scala">Poi Scala</a>というパーザーを利用して、たとえば「あるシートの<code>1:A</code>を<code>Double</code>値として取得する」といった低レベルなプログラムを書く必要があった。<a href="mailto:そこで@ippei-takahashiがPlay">そこで@ippei-takahashiがPlay</a> JSONのようにマクロ（<a href="https://github.com/milessabin/shapeless">shapeless</a>）を利用してExcelの行を表すケースクラスからパーザーを自動生成してパーズするライブラリーを開発した。また筆者はそのライブラリーをその部分だけで利用できるように簡単に修正し、またこの記事を執筆することにした。 この記事ではまずExcelのデータ構造について他のJSONなどと比較しつつ説明し、それがこのライブラリーでどのようにパーズできるかの例を示す。その後ライブラリーの実装について要所を解説し、最後にまとめを述べる。 この記事で説明するライブラリーの全ソースは下記のGitHubリポジトリーから参照できる。</p>
+<ul>
+<li><a href="https://github.com/y-yu/excel-reads" class="uri">https://github.com/y-yu/excel-reads</a></li>
+</ul>
+<p>この記事を読んで疑問点や改善点がある場合は、気軽にコメントなどで教えてほしい。</p>
+<h1>Excel <em>vs</em> JSON</h1>
+<p>ほとんどの人はExcelを1度は使ったことがあると思うが、Excelは次のように<strong>シート</strong>と呼ばれる行列にデータを入れていくことができるシステムである。</p>
+<p><img src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/0a06552f-0511-41bb-a94e-fc522f98827b.png" width="60%"/></p>
+<p>上記の図では<code>sheet1</code>というシートにデータを書き込んでいる。シートの名前は重複しない限り任意の文字列で与えられ、たとえば別のシートである<code>sheet2</code>は次のようになっている。</p>
+<p><img src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/2fa9f50c-ae12-cd23-8cfb-e827f5a8c96d.png" width="60%"/></p>
+<p>このようなシンプルな構造なのでExcelで表現できる全てのデータはJSONで模倣できる<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>。たとえば上記の画像のExcelはJSONで次のように模倣できる。</p>
+<pre><code class="json">{
+  "sheet1": [
+    [0, 1, 2, "hello", "world"],
+    [true, 3.14]
+  ],
+  "sheet2": [
+    ["this", "is", "a", "pen"]
+  ]
+}</code></pre>
+<p>このJSONのようなものがExcelのデータ構造である。重要な点を次にまとめる。</p>
+<ul>
+<li>JSONはオブジェクト（連想配列）を任意にネストすることができるが、Excelではオブジェクトをトップレベルでしか利用できない</li>
+<li>JSONはオブジェクトの値に任意のJSONを利用できるが、Excelは二次元配列しか利用できない
+<ul>
+<li>したがって、Excelの配列の要素は任意のプリミティブな値（数値、文字列、真偽値など）を入れることができるが、オブジェクトや配列を入れてはならない</li>
+</ul></li>
+</ul>
+<p>このようなExcelデータを簡単にパーズすることを目指す。</p>
+<h1>Excel Reads</h1>
+<p>ここでは作成したライブラリーであるExcel Readsの使い方と実装について説明する。</p>
+<h2>使い方</h2>
+<p>まずはExcelの行に対応するケースクラスを用意する。</p>
+<pre><code class="scala">case class HelloWorld(
+  hello: String,
+  world: String
+)</code></pre>
+<p>そして次のExcelを与える。</p>
+<p><img src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/1410fa74-17d3-35a5-8837-7c7e36cff125.png" width="50%"/></p>
+<p>このファイルをPoi Scalaで読み込むと次のような抽象データ構造へと変換される。</p>
+<pre><code class="scala">val rowWithSheetName = RowWithSheetName(
+  "sheet",
+  Row(1) {
+    Set(StringCell(1, "hello"), StringCell(2, "world"))
+  }
+)</code></pre>
+<p><code>RowWithSheetName</code>はライブラリーが提供するデータ構造で、行とシート名の組である。あとは先程の<code>HelloWorld</code>を型パラメーターとしてパーザーを起動するだけである。</p>
+<pre><code class="scala">ExcelReads[HelloWorld].read(rowWithSheetName) // Success(HelloWorld("hello", "world"))</code></pre>
+<p>パーザーの結果は<a href="https://github.com/scalaz/scalaz">Scalaz</a>の<code>ValidationNel</code><a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>であり、<code>Success</code>は成功を表す。</p>
+<h2>実装の説明</h2>
+<p>まずは型クラス<code>ExcelReads</code>によってパーザーが定義・自動生成される。</p>
+<pre><code class="scala">trait ExcelReads[A] {
+  protected def parseState(
+    rowWithSheetName: RowWithSheetName
+  ): State[Int, ValidationNel[ExcelRowParseError, A]]
+
+  def read(
+    rowWithSheetName: RowWithSheetName,
+    initial: Int = 1
+  ): ValidationNel[ExcelRowParseError, A] =
+    parseState(rowWithSheetName).eval(initial)
+
+  def map[B](f: A =&gt; B): ExcelReads[B] = { rowWithSheetName =&gt;
+    parseState(rowWithSheetName).map(_.map(f))
+  }
+}</code></pre>
+<p>まず型パラメーター<code>A</code>はパーズの結果得られる結果の型である。パーズ結果は関数<code>read</code>の結果の型<code>ValidationNel[ExcelRowParseError, A]</code>を返す。<code>String</code>や<code>Int</code>などについては自明な型としてあらかじめデフォルトのインスタンスが与えられている。</p>
+<pre><code class="scala">implicit val parserStringOption: ExcelReads[Option[String]] = { rowWithSheetName =&gt;
+  State { s =&gt;
+    (
+      s + 1,
+      rowWithSheetName.row.cells.find(_.index == s).map {
+        case StringCell(_, data) =&gt;
+          Success(data.trim)
+        case cell =&gt;
+          failureNel(
+            UnexpectedTypeCell(
+              errorIndex = s,
+              expectedCellType = StringCellType,
+              actualCellType = CellType.fromCell(cell)
+            )
+          )
+      }.sequence
+    )
+  }
+}</code></pre>
+<p>まずは上記のように<code>Option[String]</code>のような<code>Option[?]</code>の型のインスタンスを作成する。<code>State[Int, ?]</code>の<code>Int</code>は列方向のインデックスを示している。たとえば<code>s + 1</code>という処理は、1つセルをパーズしたので次のセルへと移動するという処理である。このようにStateモナドを利用しているため、たとえば3つのセルを利用するといったパーザーも自由に書くことができる。 そして<code>Option[A]</code>のインスタンスから<code>A</code>のインスタンスを次のように導出する。</p>
+<pre><code class="scala">implicit def parseA[A](implicit R: ExcelReads[Option[A]]): ExcelReads[A] = { rowWithSheetName =&gt;
+  for {
+    validation &lt;- R.parseState(rowWithSheetName)
+    s &lt;- State.get[Int]
+  } yield validation andThen {
+    case Some(a) =&gt; Success(a)
+    case None =&gt; failureNel(UnexpectedEmptyCell(s - 1))
+  }
+}</code></pre>
+<p>このようにするため、たとえば<code>Option[Option[A]]</code>のような<code>Option</code>がネストした型をパーズすることはできない。しかし、ネストした<code>Option</code>型の値に対応するExcel表現が自明ではないことから、コードのシンプルさを優先してこのようなインスタンスとした。 また、<code>Seq[A]</code>は<code>A</code>のインスタンスを利用して次のようになる。</p>
+<pre><code class="scala">implicit def parserSeq[A](implicit R: ExcelReads[A]): ExcelReads[Seq[A]] = { rowWithSheetName =&gt;
+  val row = rowWithSheetName.row
+
+  State { s =&gt;
+    val res: Seq[ValidationNel[ExcelRowParseError, A]] = unfold(s) { x =&gt;
+      val (next, value) = R.parseState(rowWithSheetName)(x)
+
+      value match {
+        case v @ Success(_) =&gt;
+          Some((v, next))
+        case v @ Failure(_) =&gt;
+          if (row.cells.exists(_.index &gt;= x))
+            // Even if an error occurred at somewhere in the row,
+            // it parses at the end to concat all errors.
+            Some((v, next))
+          else
+            // Otherwise parsing is done.
+            None
+      }
+    }
+
+    (
+      s + res.length,
+      res.foldRight[ValidationNel[ExcelRowParseError, Seq[A]]](Success(Nil)) {
+        (xv, acc) =&gt;
+          xv.ap(acc.map(xs =&gt; x =&gt; x +: xs))
+      }
+    )
+  }
+}</code></pre>
+<p>やや大きいコードだが、次のような特徴がある。</p>
+<ul>
+<li><code>Validation</code>型を利用している利点を活かすため、たとえパーズに失敗したとしても空のセルが出現するまでパーズを続けて可能な限りエラーを集めるようにしている</li>
+<li>簡単のためこの実装はバックトラックのような仕組みを搭載していない。したがってこのコードはケースクラスの末尾に<code>Seq</code>がある場合にのみしか正常に動作しない
+<ul>
+<li>正規表現エンジンのようにバックトラックを実装することで、<code>Seq</code>がケースクラスのどの位置においても使えるようにするという戦略もあるが、しかしそうすると正規表現のように<code>*</code>が貪欲かそうでないか、などといった複雑さも生じる</li>
+<li>これらの複雑さとユースケースを勘案した結果、ひとまずは末尾でのみ<code>Seq</code>が使えれば十分であろうと考えてこの実装を与えた</li>
+</ul></li>
+</ul>
+<p>最後に<code>HList</code>に関するインスタンスを作成する。<code>HList</code>はshapelessの機能でケースクラスからマクロで<code>HList</code>へ変換するため必要になる。</p>
+<pre><code class="scala">implicit val parserHNil: ExcelReads[HNil] = { _ =&gt;
+  State(s =&gt; (s, Success(HNil: HNil)))
+}
+
+implicit def parserHCons[H, T &lt;: HList](
+  implicit head: ExcelReads[H],
+  tail: ExcelReads[T]
+): ExcelReads[H :: T] = { rowWithSheetName =&gt;
+  for {
+    hv &lt;- head.parseState(rowWithSheetName)
+    tv &lt;- tail.parseState(rowWithSheetName)
+  } yield
+    hv.ap(tv.map(t =&gt; h =&gt; h :: t))
+}
+
+implicit def parserHList[A, L &lt;: HList](
+  implicit gen: Generic.Aux[A, L],
+  parserHList: Lazy[ExcelReads[L]]
+): ExcelReads[A] = { rowWithSheetName =&gt;
+  parserHList.value.parseState(rowWithSheetName).map(_.map(gen.from))
+}</code></pre>
+<p>このようになっているが、特別に説明するところはないと思う。注意するべきなのは<code>Coproduct</code>のインスタンスは用意されていないということである。たとえば次のようなケースクラス<code>User</code>をデフォルトのインスタンスでパーズすることはできない。</p>
+<pre><code class="scala">sealed trait Sex
+case class Male(value: String) extends Sex
+case class Female(value: String) extends Sex
+
+case class User(
+  name: String,
+  age: Int,
+  sex: Sex
+)
+
+val rowWithSheetName = ???
+
+ExcelReads[User].read(rowWithSheetName) // compile error!</code></pre>
+<p>これに対応するExcelは次のようになる。</p>
+<p><img src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/20d25900-2601-7788-fd47-d3bf8a2ab849.png" width="50%"/></p>
+<p>代数的データ型（ADT）であるような「このうちのどれか」という構造のパーズを汎用に行なうためには<code>Coproduct</code>のインスタンスが必要になる。しかし次のような理由でデフォルトのインスタンスでこれは用意していない。</p>
+<ul>
+<li>shapelessによるケースクラスから<code>HList</code>への変換は、引数（フィールド）の並びと<code>HList</code>上の型の並びが対応するため順序が明らかに自明であるが、一方で代数的データ型の場合はどのような順序の<code>Coproduct</code>が生成されるのかshapelessの実装次第となると思われる</li>
+<li>そのため、たとえば<code>Either[Double, Int]</code>のようなとき、Excelのセルでは<code>Double</code>と<code>Int</code>に区別がないため、どちらでパーズするのかに何らかの優先順位が必要になる
+<ul>
+<li>上記の<code>User</code>の例では<code>String</code>と<code>String</code>であるため、型だけで区別することは不可能である</li>
+</ul></li>
+<li>たとえば正規表現では<code>A | B</code>のように書いた場合、正規表現<code>A</code>にも<code>B</code>にもマッチする場合は左を優先して<code>A</code>にマッチしたとする、といったルールがある
+<ul>
+<li>このようなルールは（正規表現エンジンごとに違いが多少あるとはいえ）正規表現の文字列としての表現からある程度知ることができるが、<code>Coproduct</code>の生成方法はshapeless任せなのでこの実装を知っていなければならない</li>
+<li>型レベルリスト（<code>HList</code>）などで優先順位を与えるという方法もあるが、議論として<code>Either</code>のようなものが必要な場合は、一旦どちらも可能な1つのデータ型として解釈しておき、そのあとドメインモデルなどへバリデーション処理をしつつ変換するときにより厳密にすればよいという結論となった</li>
+<li>Excelの解釈によって生まれるデータ型は、あくまでもData Transfer Object（DTO）であろうから、あまり複雑なバリデーションや変換をこのフェーズで一気にやる必要はないと判断した</li>
+</ul></li>
+<li>このような検討の末、ひとまずのところは<code>Coproduct</code>のインスタンスは作成しなかった</li>
+</ul>
+<p>このようにして<code>ExcelReads</code>のインスタンスが定義されている。</p>
+<h1>まとめ</h1>
+<p>このようExcelからケースクラスへのパーザーをshapelessで自動生成するようなものを作成した。今後の課題として、本文でも説明したが<code>Seq</code>をケースクラスの途中でも使えた方がなにかと便利そうな気はする。そのため多少は複雑になるが、このシステムがもし使えそうとなった時には、正規表現のようなバックトラックを導入したり、正規表現に近いDSLを導入して貪欲かどうかなどを与えられるようにしたい。</p>
+<h1>議論 （余談）</h1>
+<p>この実装が生まれたときの議論を紹介しておく。Excelのデータ構造がJSONで模倣できるので、JSONからケースクラスへ変換するPlay JSONがある以上この変換は可能であると思われていたが、使いやすいものになるかどうかという点が謎であった。</p>
+<p><img src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/53a67b1e-b805-c993-9fdf-db3a70fa3262.png" width="70%"></p>
+<p>とはいえ作って使ってみないと分からないということで（？）@ippei-takahashiにより実装が行なわれた。</p>
+<p><img src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/88b172b0-dae5-dd57-9efe-a7ba9da5e3c4.png" width="70%"/></p>
+<p>まだこのライブラリーを利用してがっつりとプログラムを書いたわけではないので、今後使ってみてどんどん洗練させていきたい。</p>
+<h2>追記</h2>
+<p><code>Seq</code>を任意の場所に置くためにバックトラックについて考えていたところ、<a href="https://www.slideshare.net/SanshiroYoshida/making-logic-monad">ねこはる君がScalaMatsuri2019で発表</a>していたMonadPlusを使ったテクニックを利用すればいいのでは？と思い彼に相談してみたところ👇というふうになった……。</p>
+<ul>
+<li><blockquote class="twitter-tweet" data-conversation="none"><p lang="ja" dir="ltr">List[State[Int, ValidationNel[Error, A]]]👈こういう感じでMonadPlusにしてバックトラックを搭載したらどうですかね？とねこはる君に相談したけど、複雑になりすぎて使えなくなりますよーという感じになった……😇</p>&mdash; 吉村 優 / YOSHIMURA Yuu (@_yyu_) <a href="https://twitter.com/_yyu_/status/1171006387997962245?ref_src=twsrc%5Etfw">September 9, 2019</a></blockquote>
+<script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+<ul>
+<li><p>ようするに、たとえば次のようなケースクラスを考える</p>
+<pre><code class="scala">case class TwoStringSeq(
+  seq1: Seq[String],
+  seq2: Seq[String]
+)</code></pre></li>
+<li>このようにしたとき、正規表現では<code>(\w*)(\w*)</code>のようなものになると言えるので、<code>seq1</code>に貪欲にマッチして<code>seq2</code>は空となるという1つの戦略がある。しかし、正規表現では慣用的にこのように振る舞うが、こうでなければならないというわけでもない</li>
+<li>したがってExcel上の表記と型との間の関係がどんどんと非自明になってしまう</li>
+<li>このような議論があって<code>Coproduct</code>のインスタンスをあえて作らなかったので、このような途中にあらわれる<code>Seq</code>もなくてよいのではないか</li>
+<li>一方で<code>HList</code>のインスタンスを改良することで、ケースクラスの末尾以外に<code>Seq</code>がある場合はコンパイルエラーとすることができそう
+<ul>
+<li>こちらはやる価値があるのではないか</li>
+</ul></li>
+</ul></li>
+<li><blockquote class="twitter-tweet" data-conversation="none"><p lang="ja" dir="ltr">何ひとつ 主張できない 予感して（575） <a href="https://t.co/ONWDHORVzA">pic.twitter.com/ONWDHORVzA</a></p>&mdash; 吉村 優 / YOSHIMURA Yuu (@_yyu_) <a href="https://twitter.com/_yyu_/status/1171066816870809600?ref_src=twsrc%5Etfw">September 9, 2019</a></blockquote>
+<script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+<ul>
+<li><code>Validation</code>はアプリカティブなので、エラーを同時にいくつも集めることができるがバックトラックした場合、どのエラーを表示するのがよいのか分からなくなる</li>
+<li>バックトラックした組み合せを全てエラー表示すると、ユーザーにとって使いやすいものではなくなりそう</li>
+<li>したがってバックトラックを入れてしまうと<code>Validation</code>をつかっている意味が薄れるのではないか？</li>
+</ul></li>
+</ul>
+<p>このあとで<code>List[State[Int, ValidationNel[Error, A]]</code>は<code>StateT</code>をつかって<code>StateT[List, ValidationNel[Error, A]]</code>の方がいいですね、という話をした。</p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>厳密に言えばExcelにはJSONには存在しない日付型や数式型などを持っているが、ここで重要な点はExcelのセルの型というよりは、オブジェクトの中にオブジェクトをネストできないといった構造の制約であるため、この差はひとまず無視するここにする。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p><code>Validation[A, B]</code>の<code>A</code>を<code>NonEmptyList</code>に強制したものであり次のように定義される。</p>
+<pre><code class="scala">type ValidationNel[A, B] = Validation[NonEmptyList[A], B]</code></pre>
+<a href="#fnref2" class="footnote-back">↩</a></li>
+</ol>
+</section>

@@ -1,0 +1,39 @@
+<h1>はじめに</h1>
+<p><a href="https://blog.eiel.info/blog/2014/02/18/github-push-from-travis/">Travis-CI でコミットして GitHub にプッシュする - 公開鍵認証を利用してみる</a>は大変すばらしい記事であり、これを利用して筆者も長くTravis CIで自動生成したPDFを<code>gh-pages</code>ブランチへプッシュするといったスクリプトを運用してきた。ところが筆者がTravis CIのLinuxディストリビューションをUbuntu 18.04 LTS（bionic）へアップデートしたところ、この方法が動かなくなってしまった。これは18.04からOpenSSLのバージョンが1.1系となり、オプションが変ってしまったからである。 この記事では、OpenSSL 1.1系で利用できるように元記事の内容を（雑に）翻訳する。</p>
+<h1>OpenSSL 1.1系のインストール</h1>
+<p>macOSを利用している場合は次のコマンドで入手できる。</p>
+<pre><code class="console">$ brew install openssl@1.1</code></pre>
+<p>環境変数<code>PATH</code>を次のように設定する。</p>
+<pre><code class="console">$ echo 'export PATH="/usr/local/opt/openssl/bin:$PATH"' &gt;&gt; ~/.zshrc</code></pre>
+<p>このような結果が得られれば成功である。</p>
+<pre><code class="console">$ openssl version
+OpenSSL 1.1.1d  10 Sep 2019</code></pre>
+<h1>秘密鍵の暗号化</h1>
+<p>次のような手順で行う。</p>
+<ol>
+<li><p>秘密鍵の生成</p>
+<pre><code class="console">$ ssh-keygen -f deploy_key</code></pre></li>
+<li><p>秘密鍵を暗号化用のパスワード<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>を生成</p>
+<pre><code class="console">$ password=`cat /dev/urandom | head -c 10000 | openssl sha1 | cut -d' ' -f 2`</code></pre>
+<ul>
+<li>ここも<code>openssl sha1</code>の挙動が変っているため若干のコマンド修正が必要であることに注意せよ</li>
+</ul></li>
+<li><p>秘密鍵の暗号化</p>
+<pre><code class="console">$ openssl aes-256-cbc -pass "pass:$password" -pbkdf2 -in deploy_key -out deploy_key.enc -a</code></pre>
+<ul>
+<li>まず<code>-k</code>オプションではなく<code>-pass</code>オプションとした。これは<code>pbkdf2</code>というのがパスワードベース暗号化（PBE）であり、ストレッチングやソルト付与などいろいろなことをやったうえで共通鍵を内部で生成して暗号化する</li>
+<li>ストレッチング回数などは規格があり、今回は<code>pbkdf2</code>を採用した</li>
+</ul></li>
+</ol>
+<p>このようにして、あとは元記事にあるようにGitに追加したりGitHubに設定すればよい。</p>
+<h1>暗号化された秘密鍵の復号</h1>
+<p>次のコマンドを利用すればよい。</p>
+<pre><code class="console">$ openssl aes-256-cbc -pass "pass:$secret" -pbkdf2 -in .travis/deploy_key.enc -d -a -out deploy.key</code></pre>
+<h1>まとめ</h1>
+<p>このようにすることでOpenSSL 1.1系でも利用できる。</p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>元記事では文章において共通鍵としているが環境変数名は<code>password</code>であり、パスワードと共通鍵を区別してはいないと思われる。この記事ではパスワードを元に共通鍵を作成する方法を新たに採用するため、利用者は意識する必要はないが一応この2つの言葉を区別して利用する。<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>

@@ -1,0 +1,116 @@
+<h1>はじめに</h1>
+<p><a href="https://store.google.com/product/google_home_mini">Google Home mini</a>を購入したので、前から持っていた<a href="https://nature.global/jp/top">Nature Remo mini</a>と連携して、部屋の温度を教えてくれる機能を実装した。このような記事はすでにいくつかネット上に存在するが、次の点が気になったので改めて書くことにした。</p>
+<ul>
+<li>情報が古くなって後述する<a href="https://dialogflow.com/">Dialogflow</a>の使い方が変っている</li>
+<li>ローカルネットワーク内にサーバーを構築する必要がある
+<ul>
+<li>Google HomeもNature Remoもインターネットからアクセス可能なAPIがあるため、実はローカルサーバーは不要である</li>
+</ul></li>
+<li>Dockerで<a href="https://www.heroku.com">Heroku</a>にデプロイできる仕組みがない</li>
+</ul>
+<p>このためこの記事ではこれらが解決されて次のようになることを目指した。</p>
+<ul>
+<li>執筆時点でのUIをキャプチャした（Dialogflowは所見ではごちゃごちゃしているので、解説とUIが違うと手間がかかる）</li>
+<li>サーバーアプリケーションはDockerで起動できるようにし、Herokuにデプロイすることで動作する
+<ul>
+<li>サーバーアプリケーションはPython + <a href="http://flask.pocoo.org/">Flask</a>で実装した</li>
+</ul></li>
+</ul>
+<p>この記事で作ったプログラムは下記に置かれている。</p>
+<ul>
+<li><a href="https://github.com/y-yu/google-home-nature-remo-temperature" class="uri">https://github.com/y-yu/google-home-nature-remo-temperature</a></li>
+</ul>
+<p>この記事を読んで何か分かりにくいことや改善点を見つけた場合、気軽にコメントなどで教えてほしい。</p>
+<h2>追記（2019/10/12）</h2>
+<p>公式で温度を教えてもらう機能が実装されました🎉 したがってこの記事の方法を使わなくても温度をスマートスピーカーから教えてもらえます。</p>
+<ul>
+<li><a href="https://nature.global/jp/blog/2019/10/10/ask-google-temp">スマートスピーカーに部屋の室温を教えてもらおう！</a></li>
+</ul>
+<h1>準備</h1>
+<h2>Nature Remoのアクセストークンの取得</h2>
+<p><a href="https://home.nature.global/home" class="uri">https://home.nature.global/home</a> へアクセスして<code>Generate access token</code>を押せば発行される。</p>
+<p><img width="80%" alt="accesstoken.png" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/3bdc92a4-d9e2-4c80-c3b9-31d3a6ea76be.png"></p>
+<h2>Herokuのアプリケーションを作成</h2>
+<p><a href="https://dashboard.heroku.com/apps" class="uri">https://dashboard.heroku.com/apps</a> へアクセスして<code>New &gt; Create new app</code>を押せばよい。</p>
+<p><img width="30%" alt="" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/33a98912-40b6-b7f6-d595-7c0608ecd952.png"></p>
+<p>そして<code>App name</code>は<code>google-home-nature-remo</code>としたが、この命名はすでに筆者が利用してしまったので別の名称にしなければならない。この<code>App name</code>は後にコマンドライン上やURL上で利用するので、別の名前にした場合はこの記事のいろいろな部分を適宜修正する必要がある。この命名がコマンドラインやURLで必要になった場合は、<code>《App name》</code>と表記する。</p>
+<p><img width="70%" alt="" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/595b7cca-197f-835e-a7c7-e36582b14126.png"></p>
+<p>最後に<code>Create app</code>を押す。これでアプリケーションがデプロイできるようになる。そしてアプリケーションのために環境変数を設定する。<a href="">https://dashboard.heroku.com/apps/《App name》/settings</a>へアクセスし次のように環境変数を入れる。</p>
+<p><img width="80%" alt="env.png" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/cfd0c272-0b8e-4d2f-90b9-1ca94d410702.jpeg"></p>
+<p><code>NATURE_REMO_TOKEN</code>は先ほど発行したNature Remoのアクセストークンであり<code>BASIC_AUTH_USERNAME</code>と<code>BASIC_AUTH_PASSWORD</code>はそれぞれGoogle Home（正確にはDialogflow）がこのHerokuアプリケーションにアクセスするためのBasic認証の情報である。これはURLが特定されると部屋の温度を取得される恐れがあるため、このように認証をかけておくことにする。</p>
+<h1>サーバーアプリケーションのデプロイ</h1>
+<p>HerokuのDockerアプリケーションをデプロイする。次のような流れを行う。</p>
+<ol>
+<li><code>git clone https://github.com/y-yu/google-home-nature-remo-temperature.git</code></li>
+<li><code>cd google-home-nature-remo-temperature</code></li>
+<li><code>heroku login</code>
+<ul>
+<li>もしCLIの<code>heroku</code>がない場合はHomebrewなどで適宜インストールする</li>
+</ul></li>
+<li><code>heroku container:login</code></li>
+<li><code>heroku container:push web -a 《App name》</code></li>
+<li><code>heroku container:release web -a 《App name》</code></li>
+</ol>
+<p>これでサーバーサイド側は完成のはずである。次のコマンドでテストするとよい。</p>
+<pre><code class="console">$ curl -XPOST --basic -u "user:*******" https://google-home-nature-remo.herokuapp.com/temperature | jq
+{
+  "payload": {
+    "google": {
+      "expectUserResponse": false,
+      "richResponse": {
+        "items": [
+          {
+            "simpleResponse": {
+              "textToSpeech": "現在の室温は24.39度です"
+            }
+          }
+        ]
+      }
+    }
+  }
+}</code></pre>
+<p>このようなJSONが表示されれば成功である。</p>
+<h1>Google Assistantアプリケーションの作成</h1>
+<p><a href="https://console.actions.google.com/" class="uri">https://console.actions.google.com/</a> へアクセスし<code>New project</code>を押すと、次のような画面があらわれる。</p>
+<p><img width="60%" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/845c176c-563f-8f0d-d0b7-d8e38d0bf015.png"></p>
+<p>言語を日本語、地域を日本にして<code>Create project</code>する。するとWelcomeページが表示される。</p>
+<p><img width="60%" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/1899f5ca-7b8a-e7ac-cda6-eaba413259db.png"></p>
+<p>ここからGoogle Homeで呼びだすための設定をしていくので、上のタブの<code>Develop</code>を押す。</p>
+<h2>Invocationの設定</h2>
+<p>左のタブに<code>Invocation</code>というのがあるので、まずはこれを設定する。これは「OK, Google. <code>○○○○○</code>につないで」の<code>○○○○○</code>を決めることで、さきほど作ったアプリケーションを呼び出すことができるようになる。ここでは<code>部屋の温度</code>にした。</p>
+<p><img width="60%" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/1cfe31b1-26c8-aaf5-5bbd-e913a27284df.png"></p>
+<p>これで「OK, Google. 部屋の温度につないで」と言うとこのGoogle Assistantアプリケーションが起動するようになる。</p>
+<h2>Actionの追加</h2>
+<p>それではDialogflowを使ってどのようなときにどうするのかを定義していく。あらかじめゴールを述べておくと「このアプリケーションが起動した時に、さきほど作ったHerokuアプリケーションに問い合わせてその情報を発言する」というものである。 まずは左側のタブから<code>Action</code>を選び、<code>Add action</code>を押す。</p>
+<p><img width="60%" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/c7bf7b07-16b4-d5c1-f01d-da2cbadd3c68.png"></p>
+<p>今回はbuilt-inではないので、Custom intentを作るため、画像のような<code>BUILD</code>ボタンを押してDialogflowへ移動する。</p>
+<h2>Dialogflowの設定</h2>
+<p>次からは<code>Create new agent</code>で新しい設定を作成し、適当な名前をつける。ここからDialogflowを設定していく。</p>
+<h3>Default Welcome Intentの無効化</h3>
+<p>このアプリケーションはデフォルトで「OK, Google. <code>○○○○○</code>につないで」の後にやることであるWelcome Intentが決っているが、今回このGoogle Assistantアプリケーションは温度を返す機能しかないため、このデフォルト機能は必要ない。</p>
+<p><img width="50%" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/4422006b-3d0e-6772-7146-e8a585580ffa.png"></p>
+<p>そこで上の画像のように<code>Events</code>に設定してあった<code>Welcome</code>を削除して空にしておく。</p>
+<h3>Fulfillmentの設定</h3>
+<p>次にHerokuアプリケーションへ問い合わせる部分を定義する。左側のタブから<code>Fulfillment</code>を選び、<code>Webhook</code>を<code>ENABLE</code>にする。そしてHeroku側の環境変数に従ってBasic認証の情報とアプリケーションのURLを入力する。</p>
+<p><img width="80%" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/dead290c-772d-24ad-682c-e3ccb416b1a1.png"></p>
+<p>そして画面右下の<code>SAVE</code>を押す。</p>
+<h3>Intentの設定</h3>
+<p>Dialogflowの左側のタプから<code>Intent</code>を押し、右上にある<code>CREATE INTENT</code>を押す。<code>Intent name</code>は適当に入れておけばよい。ここはユーザーのどういうアクションに対して何をするかを定義する部分であり、今回は機能が1つ（部屋の温度を返すだけ）なので、起動した瞬間にHerokuアプリケーションへ問い合わせてもらえばよい。 したがって、まずは<code>Event</code>を設定する。</p>
+<p><img width="50%" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/d7012c85-4cb1-ebdf-90eb-f54b7605a1f5.png"></p>
+<p>このように<code>Welcome</code>を設定した。そして一番下にある<code>Enable webhook call for this intent</code>を有効にすればHerokuアプリケーションへの問い合わせが行われる。</p>
+<h3>Integrationsの設定</h3>
+<p>最後に追加したIntentをGoogle Homeで使う設定を書いておく。もう<code>Default Welcome Intent</code>はいらないので削除し、いま作った<code>room temperature</code>を入れる。</p>
+<p><img width="60%" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/6aee44a2-5f93-69c2-e23f-651f3c526951.png"></p>
+<p>また<code>Auto-preview changes</code>を入れておけば修正したときに、明示的な操作なく変更が適用されて便利である。ここで<code>TEST</code>ボタンを押してシミュレーターでテストしてみる。</p>
+<p><img width="60%" src="https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/10815/288fc301-9775-bcd1-df12-a9080f7292de.png"></p>
+<p>このようになれば成功である。この時点でもう部屋のGoogle Homeから利用できる状態にあるので、たとえばこの例では「OK, Google. 部屋の温度につないで」と言えばきちんと応答される。</p>
+<h1>おわりに</h1>
+<p>Google Homeアプリケーションの開発は、とにかく覚えることが多くて大変であった。この資料が他の方々の開発に役立てばよいと思う。</p>
+<h1>参考文献</h1>
+<ul>
+<li><a href="http://totech.hateblo.jp/entry/2018/02/06/162102">Google HomeとFlask(Python)サーバでスマートスピーカーアプリを作成してみた</a></li>
+<li><a href="https://qiita.com/iton/items/356130e6697d18b27c1f">Dialogflow API V2使ってGoogle Homeのアプリを作成</a></li>
+<li><a href="https://blog.yuu26.com/entry/20180523/1527086494">Google Home + Nature Remo API で室温を喋らせる</a></li>
+<li><a href="https://dev.classmethod.jp/voice-assistant/actions-on-google/hello-world-on-google-home/">Google Home でハローワールド</a></li>
+<li><a href="https://qiita.com/sohsatoh/items/b710ab3fa05e77ab2b0a">Nature Remoの公式APIの使い方</a></li>
+</ul>
